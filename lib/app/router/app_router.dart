@@ -3,6 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../features/home/presentation/home_screen.dart';
+import '../../features/home/presentation/menu_screen.dart';
+import '../../features/home/presentation/profile_screen.dart';
+import '../../features/home/presentation/safety_privacy_screen.dart';
+import '../../features/home/presentation/settings_screen.dart';
+import '../../features/home/presentation/travel_history_screen.dart';
 import '../../features/auth/presentation/auth_screen.dart';
 import '../../features/onboarding/presentation/onboarding_screen.dart';
 import '../../features/preferences/presentation/mobility_preferences_screen.dart';
@@ -23,8 +28,13 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/auth',
-        pageBuilder: (context, state) =>
-            _appPage(state: state, child: const AuthScreen()),
+        pageBuilder: (context, state) => _appPage(
+          state: state,
+          child: AuthScreen(
+            startInCreateMode: state.uri.queryParameters['mode'] == 'create',
+            isGuestUpgrade: state.uri.queryParameters['upgrade'] == 'true',
+          ),
+        ),
       ),
       GoRoute(
         path: '/preferences',
@@ -39,6 +49,31 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/home',
         pageBuilder: (context, state) =>
             _appPage(state: state, child: const HomeScreen()),
+      ),
+      GoRoute(
+        path: '/menu',
+        pageBuilder: (context, state) =>
+            _appPage(state: state, child: const MenuScreen()),
+      ),
+      GoRoute(
+        path: '/profile',
+        pageBuilder: (context, state) =>
+            _appPage(state: state, child: const ProfileScreen()),
+      ),
+      GoRoute(
+        path: '/settings',
+        pageBuilder: (context, state) =>
+            _appPage(state: state, child: const SettingsScreen()),
+      ),
+      GoRoute(
+        path: '/history',
+        pageBuilder: (context, state) =>
+            _appPage(state: state, child: const TravelHistoryScreen()),
+      ),
+      GoRoute(
+        path: '/safety-privacy',
+        pageBuilder: (context, state) =>
+            _appPage(state: state, child: const SafetyPrivacyScreen()),
       ),
     ],
   );

@@ -1,134 +1,95 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
-
-import '../../auth/data/auth_repository.dart';
-import '../../preferences/application/mobility_preferences_controller.dart';
-import '../../preferences/domain/mobility_preferences.dart';
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
+  void _openDestinationSearch(BuildContext context) {
+    HapticFeedback.selectionClick();
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(
+          content: Text('Destination search will be connected next.'),
+        ),
+      );
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final preferences = ref.watch(mobilityPreferencesControllerProvider);
+    final reduceMotion = MediaQuery.disableAnimationsOf(context);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Mobility AI'),
-        actions: [
-          IconButton(
-            tooltip: 'Edit travel preferences',
-            onPressed: () => context.push('/preferences?edit=true'),
-            icon: const Icon(Icons.tune_rounded),
-          ),
-          PopupMenuButton<String>(
-            tooltip: 'Account options',
-            icon: const Icon(Icons.account_circle_outlined),
-            onSelected: (value) async {
-              if (value != 'sign-out') return;
-              await ref.read(authRepositoryProvider).signOut();
-              if (context.mounted) context.go('/auth');
-            },
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'sign-out', child: Text('Sign out')),
-            ],
-          ),
-        ],
-      ),
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
-          children: [
-            Text(
-              'Good to go',
-              style: Theme.of(context).textTheme.headlineLarge,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Plan a journey that works with the way you move.',
-              style: Theme.of(context).textTheme.bodyLarge,
-            ),
-            const SizedBox(height: 24),
-            Container(
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.onSurface,
-                borderRadius: BorderRadius.circular(24),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(22),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(
-                      Icons.assistant_navigation,
-                      size: 42,
-                      color: Theme.of(context).colorScheme.primaryContainer,
-                    ),
-                    const SizedBox(height: 18),
-                    Text(
-                      'Where would you like to go?',
-                      style: Theme.of(context).textTheme.headlineSmall
-                          ?.copyWith(
-                            color: Theme.of(context).colorScheme.surface,
+        child: CustomScrollView(
+          slivers: [
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(24, 12, 24, 36),
+              sliver: SliverToBoxAdapter(
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 620),
+                    child: TweenAnimationBuilder<double>(
+                      tween: Tween(begin: reduceMotion ? 1 : 0, end: 1),
+                      duration: reduceMotion
+                          ? Duration.zero
+                          : const Duration(milliseconds: 420),
+                      curve: Curves.easeOutCubic,
+                      builder: (context, value, child) => Transform.translate(
+                        offset: Offset(0, 14 * (1 - value)),
+                        child: Opacity(opacity: value, child: child),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _HomeHeader(onOpenMenu: () => context.push('/menu')),
+                          const SizedBox(height: 42),
+                          Text(
+                            'Where do you want to go?',
+                            style: Theme.of(context).textTheme.headlineLarge,
                           ),
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Accessible destination search and route guidance are the next feature we’ll build.',
-                      style: TextStyle(
-                        color: Color(0xFFD2D5D8),
-                        fontSize: 16,
-                        height: 1.4,
+                          const SizedBox(height: 9),
+                          Text(
+                            'Find a route that works for the way you travel.',
+                            style: Theme.of(context).textTheme.bodyLarge
+                                ?.copyWith(
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onSurfaceVariant,
+                                ),
+                          ),
+                          const SizedBox(height: 28),
+                          _JourneyComposer(
+                            onChooseStart: () =>
+                                _openDestinationSearch(context),
+                            onChooseDestination: () =>
+                                _openDestinationSearch(context),
+                            onVoiceSearch: () =>
+                                _openDestinationSearch(context),
+                          ),
+                          const SizedBox(height: 34),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  'Travel history',
+                                  style: Theme.of(context).textTheme.titleLarge,
+                                ),
+                              ),
+                              TextButton(
+                                onPressed: () => context.push('/history'),
+                                child: const Text('See all'),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          const _EmptyTravelHistory(),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 20),
-                    ElevatedButton.icon(
-                      onPressed: null,
-                      icon: const Icon(Icons.search_rounded),
-                      label: const Text('Plan a journey — coming next'),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.person_outline_rounded,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            'Your travel profile',
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: 'Edit preferences',
-                          onPressed: () =>
-                              context.push('/preferences?edit=true'),
-                          icon: const Icon(Icons.edit_outlined),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    preferences.when(
-                      loading: () => const LinearProgressIndicator(),
-                      error: (error, stackTrace) => const Text(
-                        'Preferences are temporarily unavailable.',
-                      ),
-                      data: (value) => _PreferenceSummary(preferences: value),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -139,33 +100,234 @@ class HomeScreen extends ConsumerWidget {
   }
 }
 
-class _PreferenceSummary extends StatelessWidget {
-  const _PreferenceSummary({required this.preferences});
+class _HomeHeader extends StatelessWidget {
+  const _HomeHeader({required this.onOpenMenu});
 
-  final MobilityPreferences preferences;
+  final VoidCallback onOpenMenu;
 
   @override
   Widget build(BuildContext context) {
-    final labels = <String>[
-      preferences.priority.label,
-      if (preferences.voiceGuidance) 'Voice guidance',
-      if (preferences.wheelchairAccess) 'Wheelchair access',
-      if (preferences.reducedWalking) 'Reduced walking',
-      if (preferences.fewerTransfers) 'Fewer transfers',
-      if (preferences.vibrationAlerts) 'Vibration alerts',
-      if (preferences.largerText) 'Larger text',
-    ];
-
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
+    return Row(
       children: [
-        for (final label in labels)
-          Chip(
-            avatar: const Icon(Icons.check_rounded, size: 18),
-            label: Text(label),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(11),
+          child: Image.asset(
+            'assets/branding/app_icon.png',
+            width: 38,
+            height: 38,
+            semanticLabel: 'Mobility AI logo',
           ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            'Mobility AI',
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+        ),
+        IconButton(
+          tooltip: 'Open menu',
+          onPressed: onOpenMenu,
+          icon: const Icon(Icons.menu_rounded),
+        ),
       ],
+    );
+  }
+}
+
+class _JourneyComposer extends StatelessWidget {
+  const _JourneyComposer({
+    required this.onChooseStart,
+    required this.onChooseDestination,
+    required this.onVoiceSearch,
+  });
+
+  final VoidCallback onChooseStart;
+  final VoidCallback onChooseDestination;
+  final VoidCallback onVoiceSearch;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      borderRadius: BorderRadius.circular(22),
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 8, 10, 8),
+        child: IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const _RouteRail(),
+              const SizedBox(width: 15),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _LocationRow(
+                      semanticsLabel: 'Choose starting point',
+                      label: 'From',
+                      value: 'Choose starting point',
+                      onTap: onChooseStart,
+                    ),
+                    Divider(
+                      height: 1,
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.outlineVariant.withValues(alpha: 0.55),
+                    ),
+                    _LocationRow(
+                      semanticsLabel: 'Search for a destination',
+                      label: 'To',
+                      value: 'Search destination',
+                      onTap: onChooseDestination,
+                      trailing: IconButton(
+                        tooltip: 'Use voice search',
+                        onPressed: onVoiceSearch,
+                        icon: const Icon(Icons.mic_none_rounded),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RouteRail extends StatelessWidget {
+  const _RouteRail();
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      width: 20,
+      child: Column(
+        children: [
+          const SizedBox(height: 31),
+          Container(
+            width: 11,
+            height: 11,
+            decoration: BoxDecoration(
+              color: scheme.surface,
+              shape: BoxShape.circle,
+              border: Border.all(color: scheme.primary, width: 2),
+            ),
+          ),
+          Expanded(child: Container(width: 2, color: scheme.outlineVariant)),
+          Icon(Icons.location_on_rounded, color: scheme.primary, size: 19),
+          const SizedBox(height: 27),
+        ],
+      ),
+    );
+  }
+}
+
+class _LocationRow extends StatelessWidget {
+  const _LocationRow({
+    required this.semanticsLabel,
+    required this.label,
+    required this.value,
+    required this.onTap,
+    this.trailing,
+  });
+
+  final String semanticsLabel;
+  final String label;
+  final String value;
+  final VoidCallback onTap;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: semanticsLabel,
+      child: InkWell(
+        onTap: onTap,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 76),
+          child: Row(
+            children: [
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        label,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        value,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              ?trailing,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyTravelHistory extends StatelessWidget {
+  const _EmptyTravelHistory();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 18),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surface,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              Icons.history_rounded,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 15),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'No journeys yet',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  'Journeys you plan will appear here.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -73,11 +73,59 @@ void main() {
     await tester.tap(saveButton);
     await tester.pumpAndSettle();
 
-    expect(find.text('Good to go'), findsOneWidget);
+    expect(find.text('Where do you want to go?'), findsOneWidget);
     expect((await repository.load()).reducedWalking, isTrue);
     expect(repository.hasCompletedIntro, isTrue);
     expect(repository.isProfileComplete, isTrue);
     expect(auth.currentUser?.isGuest, isTrue);
+
+    await tester.tap(find.byTooltip('Open menu'));
+    await tester.pumpAndSettle();
+    expect(find.text('Guest traveler'), findsOneWidget);
+    expect(find.text('Log out'), findsNothing);
+
+    await tester.tap(find.text('History'));
+    await tester.pumpAndSettle();
+    expect(find.text('Travel history'), findsOneWidget);
+    expect(find.text('No journeys yet'), findsOneWidget);
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Travel profile'));
+    await tester.pumpAndSettle();
+    expect(find.text('Route priority'), findsOneWidget);
+    expect(find.text('Mobility'), findsOneWidget);
+    expect(find.text('Guidance'), findsOneWidget);
+    expect(
+      find.byKey(const Key('profile_setup_continue_button')),
+      findsNothing,
+    );
+    await tester.tap(find.byKey(const Key('profile_setup_back_button')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Safety and privacy'));
+    await tester.pumpAndSettle();
+    expect(find.text('Safety and privacy'), findsOneWidget);
+    expect(find.text('Location'), findsOneWidget);
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    expect(find.text('Appearance'), findsNothing);
+    expect(find.text('Clear map cache'), findsNothing);
+    await tester.tap(find.byTooltip('Back'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Guest traveler'));
+    await tester.pumpAndSettle();
+    expect(find.text('Create account'), findsOneWidget);
+    expect(find.text('Log out'), findsNothing);
+
+    await tester.tap(find.text('Create account'));
+    await tester.pumpAndSettle();
+    expect(find.text('Create your account'), findsOneWidget);
+    expect(find.byKey(const Key('continue_as_guest_button')), findsNothing);
   });
 }
 
@@ -97,6 +145,14 @@ class _FakeAuthRepository implements AuthRepository {
 
   @override
   Future<AppUser> createAccount({
+    required String email,
+    required String password,
+  }) async {
+    return _user = AppUser(id: 'account', isGuest: false, email: email);
+  }
+
+  @override
+  Future<AppUser> upgradeGuest({
     required String email,
     required String password,
   }) async {

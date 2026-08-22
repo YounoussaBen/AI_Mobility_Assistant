@@ -73,6 +73,14 @@ class _MobilityPreferencesScreenState
   }
 
   void _back() {
+    if (widget.isEditing) {
+      if (context.canPop()) {
+        context.pop();
+      } else {
+        context.go('/home');
+      }
+      return;
+    }
     if (_step > 0) {
       _goToStep(_step - 1);
       return;
@@ -98,7 +106,12 @@ class _MobilityPreferencesScreenState
           .read(mobilityPreferencesControllerProvider.notifier)
           .save(draft);
       await ref.read(mobilityPreferencesRepositoryProvider).completeProfile();
-      if (mounted) context.go('/home');
+      if (!mounted) return;
+      if (widget.isEditing && context.canPop()) {
+        context.pop();
+      } else {
+        context.go('/home');
+      }
     } catch (_) {
       if (mounted) {
         setState(() {
@@ -118,11 +131,13 @@ class _MobilityPreferencesScreenState
       appBar: AppBar(
         leading: IconButton(
           key: const Key('profile_setup_back_button'),
-          tooltip: _step == 0 ? 'Leave setup' : 'Previous step',
+          tooltip: widget.isEditing
+              ? 'Back'
+              : (_step == 0 ? 'Leave setup' : 'Previous step'),
           onPressed: _isSaving ? null : _back,
           icon: const Icon(Icons.arrow_back_rounded),
         ),
-        title: Text(widget.isEditing ? 'Travel profile' : 'Profile setup'),
+        title: Text(widget.isEditing ? 'Travel preferences' : 'Profile setup'),
         actions: [
           if (!widget.isEditing && _step < _stepCount - 1)
             TextButton(
@@ -139,6 +154,15 @@ class _MobilityPreferencesScreenState
         ),
         data: (savedPreferences) {
           final draft = _draft ??= savedPreferences;
+          if (widget.isEditing) {
+            return _EditingPreferencesForm(
+              preferences: draft,
+              isSaving: _isSaving,
+              saveError: _saveError,
+              onChanged: _changeDraft,
+              onSave: _save,
+            );
+          }
           return _SetupFlow(
             step: _step,
             stepCount: _stepCount,
@@ -152,6 +176,107 @@ class _MobilityPreferencesScreenState
             onEditStep: _goToStep,
           );
         },
+      ),
+    );
+  }
+}
+
+class _EditingPreferencesForm extends StatelessWidget {
+  const _EditingPreferencesForm({
+    required this.preferences,
+    required this.isSaving,
+    required this.saveError,
+    required this.onChanged,
+    required this.onSave,
+  });
+
+  final MobilityPreferences preferences;
+  final bool isSaving;
+  final String? saveError;
+  final ValueChanged<MobilityPreferences> onChanged;
+  final VoidCallback onSave;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 36),
+      child: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: IgnorePointer(
+            ignoring: isSaving,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  'Route priority',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  'Choose what should matter most.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 16),
+                _PriorityGrid(
+                  selected: preferences.priority,
+                  onSelected: (priority) {
+                    HapticFeedback.selectionClick();
+                    onChanged(preferences.copyWith(priority: priority));
+                  },
+                ),
+                const SizedBox(height: 34),
+                Text('Mobility', style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 5),
+                Text(
+                  'Choose any that make travel easier.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 10),
+                _MobilityRouteSelector(
+                  preferences: preferences,
+                  onChanged: onChanged,
+                ),
+                const SizedBox(height: 34),
+                Text('Guidance', style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 5),
+                Text(
+                  'Choose how the app should guide you.',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 16),
+                _GuidanceSelector(
+                  preferences: preferences,
+                  onChanged: onChanged,
+                ),
+                if (saveError != null) ...[
+                  const SizedBox(height: 18),
+                  Semantics(
+                    liveRegion: true,
+                    child: Text(
+                      saveError!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 30),
+                ElevatedButton(
+                  key: const Key('save_preferences_button'),
+                  onPressed: isSaving ? null : onSave,
+                  child: isSaving
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2.4),
+                        )
+                      : const Text('Save changes'),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

@@ -9,7 +9,14 @@ import '../data/auth_repository.dart';
 enum _AuthMode { signIn, createAccount }
 
 class AuthScreen extends ConsumerStatefulWidget {
-  const AuthScreen({super.key});
+  const AuthScreen({
+    super.key,
+    this.startInCreateMode = false,
+    this.isGuestUpgrade = false,
+  });
+
+  final bool startInCreateMode;
+  final bool isGuestUpgrade;
 
   @override
   ConsumerState<AuthScreen> createState() => _AuthScreenState();
@@ -23,6 +30,12 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
   bool _obscurePassword = true;
   bool _isBusy = false;
   String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.startInCreateMode) _mode = _AuthMode.createAccount;
+  }
 
   bool get _canSubmit {
     final email = _emailController.text.trim();
@@ -78,10 +91,17 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
           password: _passwordController.text,
         );
       } else {
-        await auth.createAccount(
-          email: _emailController.text,
-          password: _passwordController.text,
-        );
+        if (widget.isGuestUpgrade) {
+          await auth.upgradeGuest(
+            email: _emailController.text,
+            password: _passwordController.text,
+          );
+        } else {
+          await auth.createAccount(
+            email: _emailController.text,
+            password: _passwordController.text,
+          );
+        }
       }
       if (mounted) _openNext();
     } catch (error) {
@@ -127,6 +147,17 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      if (widget.isGuestUpgrade) ...[
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: IconButton(
+                            tooltip: 'Back',
+                            onPressed: _isBusy ? null : () => context.pop(),
+                            icon: const Icon(Icons.arrow_back_rounded),
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                      ],
                       Row(
                         children: [
                           ClipRRect(
@@ -162,31 +193,39 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                               isCreate ? 'Create your account' : 'Welcome back',
                               style: Theme.of(context).textTheme.headlineLarge,
                             ),
-                            const SizedBox(height: 9),
+                            if (widget.isGuestUpgrade) ...[
+                              const SizedBox(height: 9),
+                              Text(
+                                'Keep your profile and use it on any device.',
+                                style: Theme.of(context).textTheme.bodyLarge,
+                              ),
+                            ],
                           ],
                         ),
                       ),
-                      const SizedBox(height: 26),
-                      SegmentedButton<_AuthMode>(
-                        segments: const [
-                          ButtonSegment(
-                            value: _AuthMode.signIn,
-                            label: Text('Sign in'),
-                          ),
-                          ButtonSegment(
-                            value: _AuthMode.createAccount,
-                            label: Text('Create account'),
-                          ),
-                        ],
-                        selected: {_mode},
-                        showSelectedIcon: false,
-                        onSelectionChanged: _isBusy
-                            ? null
-                            : (selection) => setState(() {
-                                _mode = selection.first;
-                                _error = null;
-                              }),
-                      ),
+                      if (!widget.isGuestUpgrade) ...[
+                        const SizedBox(height: 26),
+                        SegmentedButton<_AuthMode>(
+                          segments: const [
+                            ButtonSegment(
+                              value: _AuthMode.signIn,
+                              label: Text('Sign in'),
+                            ),
+                            ButtonSegment(
+                              value: _AuthMode.createAccount,
+                              label: Text('Create account'),
+                            ),
+                          ],
+                          selected: {_mode},
+                          showSelectedIcon: false,
+                          onSelectionChanged: _isBusy
+                              ? null
+                              : (selection) => setState(() {
+                                  _mode = selection.first;
+                                  _error = null;
+                                }),
+                        ),
+                      ],
                       const SizedBox(height: 24),
                       TextFormField(
                         key: const Key('email_field'),
@@ -289,33 +328,37 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
                                     : 'Sign in with email',
                               ),
                       ),
-                      const SizedBox(height: 24),
-                      Row(
-                        children: [
-                          const Expanded(child: Divider()),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 14),
-                            child: Text(
-                              'or',
-                              style: Theme.of(context).textTheme.bodyMedium,
+                      if (!widget.isGuestUpgrade) ...[
+                        const SizedBox(height: 24),
+                        Row(
+                          children: [
+                            const Expanded(child: Divider()),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                              ),
+                              child: Text(
+                                'or',
+                                style: Theme.of(context).textTheme.bodyMedium,
+                              ),
                             ),
-                          ),
-                          const Expanded(child: Divider()),
-                        ],
-                      ),
-                      const SizedBox(height: 14),
-                      OutlinedButton.icon(
-                        key: const Key('continue_as_guest_button'),
-                        onPressed: _isBusy ? null : _continueAsGuest,
-                        icon: const Icon(Icons.arrow_forward_rounded),
-                        label: const Text('Continue as guest'),
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        'You can create an account later.',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      ),
+                            const Expanded(child: Divider()),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        OutlinedButton.icon(
+                          key: const Key('continue_as_guest_button'),
+                          onPressed: _isBusy ? null : _continueAsGuest,
+                          icon: const Icon(Icons.arrow_forward_rounded),
+                          label: const Text('Continue as guest'),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'You can create an account later.',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                      ],
                     ],
                   ),
                 ),

@@ -27,6 +27,11 @@ abstract interface class AuthRepository {
     required String password,
   });
 
+  Future<AppUser> upgradeGuest({
+    required String email,
+    required String password,
+  });
+
   Future<void> signOut();
 }
 
@@ -69,6 +74,23 @@ class FirebaseAuthRepository implements AuthRepository {
       password: password,
     );
     return _mapUser(credential.user)!;
+  }
+
+  @override
+  Future<AppUser> upgradeGuest({
+    required String email,
+    required String password,
+  }) async {
+    final user = _auth.currentUser;
+    if (user == null || !user.isAnonymous) {
+      return createAccount(email: email, password: password);
+    }
+    final credential = EmailAuthProvider.credential(
+      email: email.trim(),
+      password: password,
+    );
+    final result = await user.linkWithCredential(credential);
+    return _mapUser(result.user)!;
   }
 
   @override
