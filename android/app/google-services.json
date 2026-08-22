@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "136098208324",
+    "project_id": "ai-mobility-assistant-capstone",
+    "storage_bucket": "ai-mobility-assistant-capstone.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:136098208324:android:5b5e8d0b8583cd1cc3ba11",
+        "android_client_info": {
+          "package_name": "com.aimobility.ai_mobility_assistant"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCF7Co2_OpzJKq2qxWA8xkrlqvdcfZqDKU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
