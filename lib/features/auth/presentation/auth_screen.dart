@@ -40,7 +40,11 @@ class _AuthScreenState extends ConsumerState<AuthScreen> {
 
   void _openNext() {
     final profile = ref.read(mobilityPreferencesRepositoryProvider);
-    context.go(profile.isProfileComplete ? '/home' : '/preferences');
+    if (profile.isProfileComplete) {
+      context.go('/home');
+    } else {
+      context.push('/preferences');
+    }
   }
 
   Future<void> _continueAsGuest() async {

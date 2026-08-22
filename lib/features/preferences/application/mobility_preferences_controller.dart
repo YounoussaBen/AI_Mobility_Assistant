@@ -15,10 +15,7 @@ class MobilityPreferencesController extends AsyncNotifier<MobilityPreferences> {
   }
 
   Future<void> save(MobilityPreferences preferences) async {
-    state = const AsyncLoading();
-    state = await AsyncValue.guard(() async {
-      await ref.read(mobilityPreferencesRepositoryProvider).save(preferences);
-      return preferences;
-    });
+    await ref.read(mobilityPreferencesRepositoryProvider).save(preferences);
+    state = AsyncData(preferences);
   }
 }

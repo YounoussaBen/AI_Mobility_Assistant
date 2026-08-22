@@ -39,12 +39,34 @@ void main() {
     await tester.ensureVisible(guestButton);
     await tester.tap(guestButton);
     await tester.pumpAndSettle();
-    expect(find.text('What would make your journeys easier?'), findsOneWidget);
+    expect(find.text('What matters most?').hitTestable(), findsOneWidget);
 
-    final reduceWalking = find.text('Reduce walking');
-    await tester.ensureVisible(reduceWalking);
-    await tester.tap(reduceWalking);
-    await tester.pump();
+    await tester.tap(find.byKey(const Key('profile_setup_continue_button')));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('What makes travel easier?').hitTestable(),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Shorter walking').hitTestable());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('profile_setup_continue_button')));
+    await tester.pumpAndSettle();
+    expect(find.text('Choose your signals').hitTestable(), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('profile_setup_back_button')));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('What makes travel easier?').hitTestable(),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('profile_setup_continue_button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('profile_setup_continue_button')));
+    await tester.pumpAndSettle();
+    expect(find.text('Ready to go').hitTestable(), findsOneWidget);
 
     final saveButton = find.byKey(const Key('save_preferences_button'));
     await tester.ensureVisible(saveButton);

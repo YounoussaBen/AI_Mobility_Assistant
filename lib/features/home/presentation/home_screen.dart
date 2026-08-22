@@ -19,7 +19,7 @@ class HomeScreen extends ConsumerWidget {
         actions: [
           IconButton(
             tooltip: 'Edit travel preferences',
-            onPressed: () => context.go('/preferences?edit=true'),
+            onPressed: () => context.push('/preferences?edit=true'),
             icon: const Icon(Icons.tune_rounded),
           ),
           PopupMenuButton<String>(
@@ -114,7 +114,8 @@ class HomeScreen extends ConsumerWidget {
                         ),
                         IconButton(
                           tooltip: 'Edit preferences',
-                          onPressed: () => context.go('/preferences?edit=true'),
+                          onPressed: () =>
+                              context.push('/preferences?edit=true'),
                           icon: const Icon(Icons.edit_outlined),
                         ),
                       ],

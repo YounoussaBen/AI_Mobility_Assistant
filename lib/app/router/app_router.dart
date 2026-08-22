@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -17,19 +18,63 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/onboarding',
-        builder: (context, state) => const OnboardingScreen(),
+        pageBuilder: (context, state) =>
+            _appPage(state: state, child: const OnboardingScreen()),
       ),
-      GoRoute(path: '/auth', builder: (context, state) => const AuthScreen()),
+      GoRoute(
+        path: '/auth',
+        pageBuilder: (context, state) =>
+            _appPage(state: state, child: const AuthScreen()),
+      ),
       GoRoute(
         path: '/preferences',
-        builder: (context, state) => MobilityPreferencesScreen(
-          isEditing: state.uri.queryParameters['edit'] == 'true',
+        pageBuilder: (context, state) => _appPage(
+          state: state,
+          child: MobilityPreferencesScreen(
+            isEditing: state.uri.queryParameters['edit'] == 'true',
+          ),
         ),
       ),
-      GoRoute(path: '/home', builder: (context, state) => const HomeScreen()),
+      GoRoute(
+        path: '/home',
+        pageBuilder: (context, state) =>
+            _appPage(state: state, child: const HomeScreen()),
+      ),
     ],
   );
 
   ref.onDispose(router.dispose);
   return router;
 });
+
+CustomTransitionPage<void> _appPage({
+  required GoRouterState state,
+  required Widget child,
+}) {
+  return CustomTransitionPage<void>(
+    key: state.pageKey,
+    transitionDuration: const Duration(milliseconds: 340),
+    reverseTransitionDuration: const Duration(milliseconds: 300),
+    child: child,
+    transitionsBuilder: (context, animation, secondaryAnimation, child) {
+      if (MediaQuery.disableAnimationsOf(context)) return child;
+
+      final entering = Tween<Offset>(
+        begin: const Offset(1, 0),
+        end: Offset.zero,
+      ).chain(CurveTween(curve: Curves.easeOutCubic));
+      final leaving = Tween<Offset>(
+        begin: Offset.zero,
+        end: const Offset(-0.10, 0),
+      ).chain(CurveTween(curve: Curves.easeOutCubic));
+
+      return SlideTransition(
+        position: secondaryAnimation.drive(leaving),
+        child: SlideTransition(
+          position: animation.drive(entering),
+          child: child,
+        ),
+      );
+    },
+  );
+}
