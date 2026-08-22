@@ -18,7 +18,7 @@ class MobilityAssistantApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'AI Mobility Assistant',
+      title: 'Mobility AI',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
@@ -34,7 +34,7 @@ class SetupCompleteScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('AI Mobility Assistant')),
+      appBar: AppBar(title: const Text('Mobility AI')),
       body: const SafeArea(
         child: Center(
           child: Padding(

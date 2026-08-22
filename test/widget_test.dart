@@ -5,7 +5,7 @@ void main() {
   testWidgets('shows the setup confirmation screen', (tester) async {
     await tester.pumpWidget(const MobilityAssistantApp());
 
-    expect(find.text('AI Mobility Assistant'), findsOneWidget);
+    expect(find.text('Mobility AI'), findsOneWidget);
     expect(find.text('Project setup complete'), findsOneWidget);
     expect(
       find.text('Flutter and Firebase are ready for feature development.'),

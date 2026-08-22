@@ -1,4 +1,4 @@
-# AI Mobility Assistant
+# Mobility AI
 
 Flutter mobile application for accessible route planning, transport comparison,
 live journey guidance, hazard detection, and conversational assistance.
