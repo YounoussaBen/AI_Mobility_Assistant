@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../features/home/presentation/home_screen.dart';
+import '../../features/journey/presentation/journey_planner_screen.dart';
 import '../../features/home/presentation/menu_screen.dart';
 import '../../features/home/presentation/profile_screen.dart';
 import '../../features/home/presentation/safety_privacy_screen.dart';
@@ -49,6 +50,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         path: '/home',
         pageBuilder: (context, state) =>
             _appPage(state: state, child: const HomeScreen()),
+      ),
+      GoRoute(
+        path: '/plan',
+        pageBuilder: (context, state) => _appPage(
+          state: state,
+          child: JourneyPlannerScreen(
+            startWithVoice: state.uri.queryParameters['voice'] == 'true',
+          ),
+        ),
       ),
       GoRoute(
         path: '/menu',

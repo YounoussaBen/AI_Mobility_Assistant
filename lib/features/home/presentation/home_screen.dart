@@ -1,24 +1,17 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
-class HomeScreen extends ConsumerWidget {
+class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
-  void _openDestinationSearch(BuildContext context) {
+  void _openPlanner(BuildContext context, {bool voice = false}) {
     HapticFeedback.selectionClick();
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        const SnackBar(
-          content: Text('Destination search will be connected next.'),
-        ),
-      );
+    context.push(voice ? '/plan?voice=true' : '/plan');
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
 
     return Scaffold(
@@ -50,31 +43,19 @@ class HomeScreen extends ConsumerWidget {
                             'Where do you want to go?',
                             style: Theme.of(context).textTheme.headlineLarge,
                           ),
-                          const SizedBox(height: 9),
-                          Text(
-                            'Find a route that works for the way you travel.',
-                            style: Theme.of(context).textTheme.bodyLarge
-                                ?.copyWith(
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.onSurfaceVariant,
-                                ),
-                          ),
-                          const SizedBox(height: 28),
-                          _JourneyComposer(
-                            onChooseStart: () =>
-                                _openDestinationSearch(context),
-                            onChooseDestination: () =>
-                                _openDestinationSearch(context),
-                            onVoiceSearch: () =>
-                                _openDestinationSearch(context),
+                          const SizedBox(height: 24),
+                          const _CurrentLocationLabel(),
+                          const SizedBox(height: 12),
+                          _DestinationComposer(
+                            onSearch: () => _openPlanner(context),
+                            onVoice: () => _openPlanner(context, voice: true),
                           ),
                           const SizedBox(height: 34),
                           Row(
                             children: [
                               Expanded(
                                 child: Text(
-                                  'Travel history',
+                                  'Recent journeys',
                                   style: Theme.of(context).textTheme.titleLarge,
                                 ),
                               ),
@@ -135,151 +116,63 @@ class _HomeHeader extends StatelessWidget {
   }
 }
 
-class _JourneyComposer extends StatelessWidget {
-  const _JourneyComposer({
-    required this.onChooseStart,
-    required this.onChooseDestination,
-    required this.onVoiceSearch,
-  });
+class _CurrentLocationLabel extends StatelessWidget {
+  const _CurrentLocationLabel();
 
-  final VoidCallback onChooseStart;
-  final VoidCallback onChooseDestination;
-  final VoidCallback onVoiceSearch;
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(label: 'Starting point: your current location');
+  }
+}
+
+class _DestinationComposer extends StatelessWidget {
+  const _DestinationComposer({required this.onSearch, required this.onVoice});
+
+  final VoidCallback onSearch;
+  final VoidCallback onVoice;
 
   @override
   Widget build(BuildContext context) {
     return Material(
       color: Theme.of(context).colorScheme.surface,
-      borderRadius: BorderRadius.circular(22),
+      borderRadius: BorderRadius.circular(20),
       clipBehavior: Clip.antiAlias,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(18, 8, 10, 8),
-        child: IntrinsicHeight(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const _RouteRail(),
-              const SizedBox(width: 15),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _LocationRow(
-                      semanticsLabel: 'Choose starting point',
-                      label: 'From',
-                      value: 'Choose starting point',
-                      onTap: onChooseStart,
-                    ),
-                    Divider(
-                      height: 1,
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.outlineVariant.withValues(alpha: 0.55),
-                    ),
-                    _LocationRow(
-                      semanticsLabel: 'Search for a destination',
-                      label: 'To',
-                      value: 'Search destination',
-                      onTap: onChooseDestination,
-                      trailing: IconButton(
-                        tooltip: 'Use voice search',
-                        onPressed: onVoiceSearch,
-                        icon: const Icon(Icons.mic_none_rounded),
-                      ),
-                    ),
-                  ],
+      child: Semantics(
+        textField: true,
+        label: 'Search for a destination',
+        child: InkWell(
+          onTap: onSearch,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 72),
+            child: Row(
+              children: [
+                const SizedBox(width: 18),
+                Icon(
+                  Icons.search_rounded,
+                  color: Theme.of(context).colorScheme.primary,
                 ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _RouteRail extends StatelessWidget {
-  const _RouteRail();
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return SizedBox(
-      width: 20,
-      child: Column(
-        children: [
-          const SizedBox(height: 31),
-          Container(
-            width: 11,
-            height: 11,
-            decoration: BoxDecoration(
-              color: scheme.surface,
-              shape: BoxShape.circle,
-              border: Border.all(color: scheme.primary, width: 2),
-            ),
-          ),
-          Expanded(child: Container(width: 2, color: scheme.outlineVariant)),
-          Icon(Icons.location_on_rounded, color: scheme.primary, size: 19),
-          const SizedBox(height: 27),
-        ],
-      ),
-    );
-  }
-}
-
-class _LocationRow extends StatelessWidget {
-  const _LocationRow({
-    required this.semanticsLabel,
-    required this.label,
-    required this.value,
-    required this.onTap,
-    this.trailing,
-  });
-
-  final String semanticsLabel;
-  final String label;
-  final String value;
-  final VoidCallback onTap;
-  final Widget? trailing;
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      label: semanticsLabel,
-      child: InkWell(
-        onTap: onTap,
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 76),
-          child: Row(
-            children: [
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        label,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        value,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                    ],
+                const SizedBox(width: 13),
+                Expanded(
+                  child: Text(
+                    'Search a place or address',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 ),
-              ),
-              ?trailing,
-            ],
+                Container(
+                  width: 1,
+                  height: 32,
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
+                IconButton(
+                  tooltip: 'Speak destination',
+                  onPressed: onVoice,
+                  icon: const Icon(Icons.mic_none_rounded),
+                ),
+                const SizedBox(width: 8),
+              ],
+            ),
           ),
         ),
       ),
