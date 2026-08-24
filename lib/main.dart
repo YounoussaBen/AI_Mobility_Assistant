@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app/app.dart';
 import 'features/preferences/data/mobility_preferences_repository.dart';
+import 'features/voice/data/voice_preferences_repository.dart';
 import 'firebase_options.dart';
 
 Future<void> main() async {
@@ -19,6 +20,9 @@ Future<void> main() async {
       overrides: [
         mobilityPreferencesRepositoryProvider.overrideWithValue(
           MobilityPreferencesRepository(sharedPreferences),
+        ),
+        voicePreferencesRepositoryProvider.overrideWithValue(
+          VoicePreferencesRepository(sharedPreferences),
         ),
       ],
       child: const MobilityAiApp(),

@@ -4,11 +4,27 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../domain/route_option.dart';
 
 class GoogleRoutesService {
-  GoogleRoutesService({required String apiKey, Dio? dio})
-    : _apiKey = apiKey,
-      _dio = dio ?? Dio(BaseOptions(baseUrl: 'https://routes.googleapis.com'));
+  GoogleRoutesService({
+    required String apiKey,
+    String backendUrl = '',
+    Future<String?> Function()? accessToken,
+    Dio? dio,
+  }) : _apiKey = apiKey,
+       _usesBackend = backendUrl.isNotEmpty,
+       _accessToken = accessToken,
+       _dio =
+           dio ??
+           Dio(
+             BaseOptions(
+               baseUrl: backendUrl.isNotEmpty
+                   ? backendUrl.replaceFirst(RegExp(r'/$'), '')
+                   : 'https://routes.googleapis.com',
+             ),
+           );
 
   final String _apiKey;
+  final bool _usesBackend;
+  final Future<String?> Function()? _accessToken;
   final Dio _dio;
 
   Future<List<JourneyRouteOption>> routes({
@@ -33,7 +49,7 @@ class GoogleRoutesService {
     required JourneyTravelMode mode,
   }) async {
     final response = await _dio.post<Map<String, dynamic>>(
-      '/directions/v2:computeRoutes',
+      _usesBackend ? '/v1/maps/routes:compute' : '/directions/v2:computeRoutes',
       data: {
         'origin': _waypoint(origin),
         'destination': _waypoint(destination),
@@ -44,14 +60,22 @@ class GoogleRoutesService {
         'languageCode': 'en-US',
         'units': 'METRIC',
       },
-      options: Options(
-        headers: {
-          'X-Goog-Api-Key': _apiKey,
-          'X-Goog-FieldMask':
-              'routes.duration,routes.distanceMeters,'
-              'routes.polyline.encodedPolyline',
-        },
-      ),
+      options: _usesBackend
+          ? await _authenticatedOptions()
+          : Options(
+              headers: {
+                'X-Goog-Api-Key': _apiKey,
+                'X-Goog-FieldMask':
+                    'routes.duration,routes.distanceMeters,'
+                    'routes.polyline.encodedPolyline,'
+                    'routes.legs.steps.distanceMeters,'
+                    'routes.legs.steps.staticDuration,'
+                    'routes.legs.steps.travelMode,'
+                    'routes.legs.steps.endLocation.latLng,'
+                    'routes.legs.steps.navigationInstruction.instructions,'
+                    'routes.legs.steps.navigationInstruction.maneuver',
+              },
+            ),
     );
 
     final routes = response.data?['routes'] as List<dynamic>? ?? [];
@@ -62,12 +86,88 @@ class GoogleRoutesService {
             as String?;
     if (encoded == null) return null;
 
+    final steps = _parseSteps(route, fallbackMode: mode);
+    final walkingDistance = mode == JourneyTravelMode.walking
+        ? route['distanceMeters'] as int? ?? 0
+        : steps
+              .where((step) => step.travelMode == JourneyTravelMode.walking)
+              .fold<int>(0, (total, step) => total + step.distanceMeters);
+    final transitSteps = steps
+        .where((step) => step.travelMode == JourneyTravelMode.transit)
+        .length;
+
     return JourneyRouteOption(
       mode: mode,
       duration: _parseDuration(route['duration'] as String? ?? '0s'),
       distanceMeters: route['distanceMeters'] as int? ?? 0,
       path: _decodePolyline(encoded),
+      steps: steps,
+      walkingDistanceMeters: walkingDistance,
+      transfers: mode == JourneyTravelMode.transit
+          ? (transitSteps - 1).clamp(0, 99)
+          : 0,
     );
+  }
+
+  List<JourneyStep> _parseSteps(
+    Map<String, dynamic> route, {
+    required JourneyTravelMode fallbackMode,
+  }) {
+    final legs = route['legs'] as List<dynamic>? ?? const [];
+    final steps = <JourneyStep>[];
+    for (final rawLeg in legs.whereType<Map<String, dynamic>>()) {
+      final rawSteps = rawLeg['steps'] as List<dynamic>? ?? const [];
+      for (final rawStep in rawSteps.whereType<Map<String, dynamic>>()) {
+        final navigation =
+            rawStep['navigationInstruction'] as Map<String, dynamic>?;
+        final instruction = navigation?['instructions'] as String?;
+        final distance = rawStep['distanceMeters'] as int? ?? 0;
+        if ((instruction == null || instruction.trim().isEmpty) &&
+            distance == 0) {
+          continue;
+        }
+        steps.add(
+          JourneyStep(
+            instruction: instruction?.trim().isNotEmpty == true
+                ? instruction!.trim()
+                : 'Continue on the route',
+            distanceMeters: distance,
+            duration: _parseDuration(
+              rawStep['staticDuration'] as String? ?? '0s',
+            ),
+            travelMode: _parseTravelMode(
+              rawStep['travelMode'] as String?,
+              fallbackMode,
+            ),
+            maneuver: navigation?['maneuver'] as String?,
+            endLocation: _parseLocation(
+              rawStep['endLocation'] as Map<String, dynamic>?,
+            ),
+          ),
+        );
+      }
+    }
+    return steps;
+  }
+
+  JourneyTravelMode _parseTravelMode(
+    String? value,
+    JourneyTravelMode fallback,
+  ) {
+    return switch (value) {
+      'WALK' => JourneyTravelMode.walking,
+      'TRANSIT' => JourneyTravelMode.transit,
+      'DRIVE' => JourneyTravelMode.driving,
+      _ => fallback,
+    };
+  }
+
+  LatLng? _parseLocation(Map<String, dynamic>? raw) {
+    final latLng = raw?['latLng'] as Map<String, dynamic>?;
+    final latitude = latLng?['latitude'] as num?;
+    final longitude = latLng?['longitude'] as num?;
+    if (latitude == null || longitude == null) return null;
+    return LatLng(latitude.toDouble(), longitude.toDouble());
   }
 
   Map<String, Object> _waypoint(LatLng point) => {
@@ -111,5 +211,11 @@ class GoogleRoutesService {
     } while (byte >= 0x20 && index < encoded.length);
     final value = (result & 1) != 0 ? ~(result >> 1) : result >> 1;
     return (value: value, nextIndex: index);
+  }
+
+  Future<Options?> _authenticatedOptions() async {
+    final token = await _accessToken?.call();
+    if (token == null || token.isEmpty) return null;
+    return Options(headers: {'Authorization': 'Bearer $token'});
   }
 }

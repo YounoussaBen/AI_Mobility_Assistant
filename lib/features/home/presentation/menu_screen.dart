@@ -67,37 +67,52 @@ class MenuScreen extends ConsumerWidget {
               ),
             ),
             const SizedBox(height: 30),
-            Row(
-              children: [
-                Expanded(
-                  child: _QuickAction(
-                    icon: Icons.history_rounded,
-                    label: 'History',
-                    onTap: () => context.push('/history'),
-                  ),
-                ),
-                Expanded(
-                  child: _QuickAction(
-                    icon: Icons.support_agent_rounded,
-                    label: 'Support',
-                    onTap: () => _showNotReady(context, 'Support'),
-                  ),
-                ),
-                Expanded(
-                  child: _QuickAction(
-                    icon: Icons.place_outlined,
-                    label: 'Places',
-                    onTap: () => _showNotReady(context, 'Saved places'),
-                  ),
-                ),
-                Expanded(
-                  child: _QuickAction(
-                    icon: Icons.settings_rounded,
-                    label: 'Settings',
-                    onTap: () => context.push('/settings'),
-                  ),
-                ),
-              ],
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final largeText =
+                    MediaQuery.textScalerOf(context).scale(1) >= 1.3;
+                final width = largeText
+                    ? (constraints.maxWidth - 12) / 2
+                    : constraints.maxWidth / 4;
+                return Wrap(
+                  spacing: largeText ? 12 : 0,
+                  runSpacing: 12,
+                  children: [
+                    SizedBox(
+                      width: width,
+                      child: _QuickAction(
+                        icon: Icons.history_rounded,
+                        label: 'History',
+                        onTap: () => context.push('/history'),
+                      ),
+                    ),
+                    SizedBox(
+                      width: width,
+                      child: _QuickAction(
+                        icon: Icons.support_agent_rounded,
+                        label: 'Support',
+                        onTap: () => _showNotReady(context, 'Support'),
+                      ),
+                    ),
+                    SizedBox(
+                      width: width,
+                      child: _QuickAction(
+                        icon: Icons.place_outlined,
+                        label: 'Places',
+                        onTap: () => _showNotReady(context, 'Saved places'),
+                      ),
+                    ),
+                    SizedBox(
+                      width: width,
+                      child: _QuickAction(
+                        icon: Icons.settings_rounded,
+                        label: 'Settings',
+                        onTap: () => context.push('/settings'),
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
             const SizedBox(height: 30),
             Card(
@@ -108,6 +123,13 @@ class MenuScreen extends ConsumerWidget {
                     title: 'Travel profile',
                     subtitle: 'Accessibility and guidance',
                     onTap: () => context.push('/preferences?edit=true'),
+                  ),
+                  const Divider(height: 1, indent: 58),
+                  _MenuRow(
+                    icon: Icons.record_voice_over_outlined,
+                    title: 'Voice and guidance',
+                    subtitle: 'Voice, speech speed, captions, and haptics',
+                    onTap: () => context.push('/voice-guidance'),
                   ),
                   const Divider(height: 1, indent: 58),
                   _MenuRow(
@@ -191,8 +213,7 @@ class _QuickAction extends StatelessWidget {
               const SizedBox(height: 9),
               Text(
                 label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: Theme.of(context).colorScheme.onSurface,
                   fontWeight: FontWeight.w600,

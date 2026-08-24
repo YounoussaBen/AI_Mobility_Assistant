@@ -20,8 +20,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       icon: Icons.alt_route_rounded,
       eyebrow: 'Routes that fit you',
       title: 'Move with more confidence',
-      body:
-          'Compare journeys by walking, transfers, time, and accessibility — not distance alone.',
+      body: 'Compare journeys by walking, transfers, time, and accessibility.',
       tone: Color(0xFFE1F5F8),
     ),
     _OnboardingPageData(

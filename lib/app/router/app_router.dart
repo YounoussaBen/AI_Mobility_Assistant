@@ -4,6 +4,9 @@ import 'package:go_router/go_router.dart';
 
 import '../../features/home/presentation/home_screen.dart';
 import '../../features/journey/presentation/journey_planner_screen.dart';
+import '../../features/journey/presentation/active_journey_screen.dart';
+import '../../features/perception/presentation/look_ahead_screen.dart';
+import '../../features/voice/presentation/voice_guidance_screen.dart';
 import '../../features/home/presentation/menu_screen.dart';
 import '../../features/home/presentation/profile_screen.dart';
 import '../../features/home/presentation/safety_privacy_screen.dart';
@@ -57,8 +60,24 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           state: state,
           child: JourneyPlannerScreen(
             startWithVoice: state.uri.queryParameters['voice'] == 'true',
+            initialPrompt: state.uri.queryParameters['prompt'],
           ),
         ),
+      ),
+      GoRoute(
+        path: '/guidance',
+        pageBuilder: (context, state) =>
+            _appPage(state: state, child: const ActiveJourneyScreen()),
+      ),
+      GoRoute(
+        path: '/look-ahead',
+        pageBuilder: (context, state) =>
+            _appPage(state: state, child: const LookAheadScreen()),
+      ),
+      GoRoute(
+        path: '/voice-guidance',
+        pageBuilder: (context, state) =>
+            _appPage(state: state, child: const VoiceGuidanceScreen()),
       ),
       GoRoute(
         path: '/menu',

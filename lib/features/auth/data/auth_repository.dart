@@ -33,6 +33,8 @@ abstract interface class AuthRepository {
   });
 
   Future<void> signOut();
+
+  Future<String?> idToken();
 }
 
 class FirebaseAuthRepository implements AuthRepository {
@@ -95,6 +97,11 @@ class FirebaseAuthRepository implements AuthRepository {
 
   @override
   Future<void> signOut() => _auth.signOut();
+
+  @override
+  Future<String?> idToken() async {
+    return await _auth.currentUser?.getIdToken();
+  }
 
   AppUser? _mapUser(User? user) {
     if (user == null) return null;

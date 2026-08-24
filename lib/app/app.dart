@@ -14,17 +14,23 @@ class MobilityAiApp extends ConsumerWidget {
     final preferences = ref.watch(mobilityPreferencesControllerProvider);
     final useLargerText = preferences.value?.largerText ?? false;
 
-    ThemeData scale(ThemeData theme) => useLargerText
-        ? theme.copyWith(textTheme: theme.textTheme.apply(fontSizeFactor: 1.12))
-        : theme;
-
     return MaterialApp.router(
       debugShowCheckedModeBanner: false,
       title: 'Mobility AI',
-      theme: scale(AppTheme.light),
-      darkTheme: scale(AppTheme.dark),
+      theme: AppTheme.light,
+      darkTheme: AppTheme.dark,
       themeMode: ThemeMode.system,
       routerConfig: router,
+      builder: (context, child) {
+        if (!useLargerText || child == null) return child ?? const SizedBox();
+        final mediaQuery = MediaQuery.of(context);
+        return MediaQuery(
+          data: mediaQuery.copyWith(
+            textScaler: mediaQuery.textScaler.clamp(minScaleFactor: 1.30),
+          ),
+          child: child,
+        );
+      },
     );
   }
 }

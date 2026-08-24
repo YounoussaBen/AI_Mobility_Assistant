@@ -29,9 +29,13 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Mobility AI uses your location to show your starting point and plan accessible journeys.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Mobility AI uses the microphone when you choose to speak a destination.</string>
+	<string>Mobility AI uses the microphone only when you choose push-to-talk for a journey or companion command.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Mobility AI converts your spoken destination into text so you can plan a journey.</string>
+	<string>Mobility AI converts a short spoken command into text so the companion can respond.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Mobility AI uses the camera only when you start Look Ahead, processing frames on this device without storing them.</string>
+	<key>GoogleMapsAPIKey</key>
+	<string>$(GOOGLE_MAPS_API_KEY)</string>
 		<key>UIApplicationSceneManifest</key>
 		<dict>
 			<key>UIApplicationSupportsMultipleScenes</key>

@@ -1,6 +1,7 @@
 import 'package:ai_mobility_assistant/app/app.dart';
 import 'package:ai_mobility_assistant/features/auth/data/auth_repository.dart';
 import 'package:ai_mobility_assistant/features/preferences/data/mobility_preferences_repository.dart';
+import 'package:ai_mobility_assistant/features/voice/data/voice_preferences_repository.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -20,6 +21,9 @@ void main() {
       ProviderScope(
         overrides: [
           mobilityPreferencesRepositoryProvider.overrideWithValue(repository),
+          voicePreferencesRepositoryProvider.overrideWithValue(
+            VoicePreferencesRepository(await SharedPreferences.getInstance()),
+          ),
           authRepositoryProvider.overrideWithValue(auth),
         ],
         child: const MobilityAiApp(),
@@ -73,7 +77,12 @@ void main() {
     await tester.tap(saveButton);
     await tester.pumpAndSettle();
 
-    expect(find.text('Where do you want to go?'), findsOneWidget);
+    expect(find.text('How can I help you move?'), findsOneWidget);
+    expect(find.text('Talk to Mobility AI'), findsOneWidget);
+    expect(
+      find.byKey(const Key('companion_microphone_button')),
+      findsOneWidget,
+    );
     expect((await repository.load()).reducedWalking, isTrue);
     expect(repository.hasCompletedIntro, isTrue);
     expect(repository.isProfileComplete, isTrue);
@@ -103,14 +112,20 @@ void main() {
     await tester.tap(find.byKey(const Key('profile_setup_back_button')));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Safety and privacy'));
+    final safetyLink = find.text('Safety and privacy');
+    await tester.scrollUntilVisible(safetyLink, 120);
+    await tester.pumpAndSettle();
+    await tester.tap(safetyLink);
     await tester.pumpAndSettle();
     expect(find.text('Safety and privacy'), findsOneWidget);
     expect(find.text('Location'), findsOneWidget);
     await tester.tap(find.byTooltip('Back'));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Settings'));
+    final settingsLink = find.text('Settings');
+    await tester.scrollUntilVisible(settingsLink, -120);
+    await tester.pumpAndSettle();
+    await tester.tap(settingsLink);
     await tester.pumpAndSettle();
     expect(find.text('Appearance'), findsNothing);
     expect(find.text('Clear map cache'), findsNothing);
@@ -171,4 +186,7 @@ class _FakeAuthRepository implements AuthRepository {
   Future<void> signOut() async {
     _user = null;
   }
+
+  @override
+  Future<String?> idToken() async => _user == null ? null : 'test-token';
 }

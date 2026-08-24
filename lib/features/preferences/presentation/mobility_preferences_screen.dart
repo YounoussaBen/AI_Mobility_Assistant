@@ -768,15 +768,14 @@ class _PriorityChoice extends StatelessWidget {
         child: InkWell(
           borderRadius: BorderRadius.circular(18),
           onTap: onTap,
-          child: SizedBox(
-            height: 108,
-            child: Stack(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 18, 16, 14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 108),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
                     children: [
                       Icon(
                         _icon,
@@ -785,20 +784,17 @@ class _PriorityChoice extends StatelessWidget {
                             ? Theme.of(context).colorScheme.onPrimaryContainer
                             : Theme.of(context).colorScheme.primary,
                       ),
-                      Text(
-                        priority.shortLabel,
-                        maxLines: 1,
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
+                      const Spacer(),
+                      _AnimatedCheck(selected: selected),
                     ],
                   ),
-                ),
-                Positioned(
-                  top: 14,
-                  right: 14,
-                  child: _AnimatedCheck(selected: selected),
-                ),
-              ],
+                  const SizedBox(height: 14),
+                  Text(
+                    priority.shortLabel,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -893,69 +889,54 @@ class _RouteStop extends StatelessWidget {
           HapticFeedback.selectionClick();
           onTap();
         },
-        child: SizedBox(
-          height: 72,
-          child: Row(
-            children: [
-              SizedBox(
-                width: 46,
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    if (!isFirst)
-                      Positioned(
-                        top: 0,
-                        bottom: 36,
-                        child: Container(
-                          width: 2,
-                          color: Theme.of(context).colorScheme.outlineVariant,
-                        ),
-                      ),
-                    if (!isLast)
-                      Positioned(
-                        top: 36,
-                        bottom: 0,
-                        child: Container(
-                          width: 2,
-                          color: Theme.of(context).colorScheme.outlineVariant,
-                        ),
-                      ),
-                    AnimatedContainer(
-                      duration: duration,
-                      width: 34,
-                      height: 34,
-                      decoration: BoxDecoration(
-                        color: selected
-                            ? Theme.of(context).colorScheme.primary
-                            : Theme.of(context).colorScheme.surface,
-                        shape: BoxShape.circle,
-                        border: Border.all(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 72),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 46,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      AnimatedContainer(
+                        duration: duration,
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
                           color: selected
                               ? Theme.of(context).colorScheme.primary
-                              : Theme.of(context).colorScheme.outlineVariant,
+                              : Theme.of(context).colorScheme.surface,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: selected
+                                ? Theme.of(context).colorScheme.primary
+                                : Theme.of(context).colorScheme.outlineVariant,
+                          ),
+                        ),
+                        child: Icon(
+                          icon,
+                          size: 19,
+                          color: selected
+                              ? Theme.of(context).colorScheme.onPrimary
+                              : Theme.of(context).colorScheme.primary,
                         ),
                       ),
-                      child: Icon(
-                        icon,
-                        size: 19,
-                        color: selected
-                            ? Theme.of(context).colorScheme.onPrimary
-                            : Theme.of(context).colorScheme.primary,
-                      ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  title,
-                  style: Theme.of(context).textTheme.titleMedium,
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
                 ),
-              ),
-              _AnimatedCheck(selected: selected),
-              const SizedBox(width: 8),
-            ],
+                _AnimatedCheck(selected: selected),
+                const SizedBox(width: 8),
+              ],
+            ),
           ),
         ),
       ),
@@ -971,44 +952,56 @@ class _GuidanceSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          child: _SignalChoice(
-            icon: Icons.record_voice_over_rounded,
-            title: 'Voice',
-            selected: preferences.voiceGuidance,
-            onTap: () => onChanged(
-              preferences.copyWith(voiceGuidance: !preferences.voiceGuidance),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: _SignalChoice(
-            icon: Icons.vibration_rounded,
-            title: 'Haptics',
-            selected: preferences.vibrationAlerts,
-            onTap: () => onChanged(
-              preferences.copyWith(
-                vibrationAlerts: !preferences.vibrationAlerts,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final largeText = MediaQuery.textScalerOf(context).scale(1) >= 1.3;
+        final width = largeText
+            ? constraints.maxWidth
+            : (constraints.maxWidth - 20) / 3;
+        return Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            SizedBox(
+              width: width,
+              child: _SignalChoice(
+                icon: Icons.record_voice_over_rounded,
+                title: 'Voice',
+                selected: preferences.voiceGuidance,
+                onTap: () => onChanged(
+                  preferences.copyWith(
+                    voiceGuidance: !preferences.voiceGuidance,
+                  ),
+                ),
               ),
             ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: _SignalChoice(
-            icon: Icons.text_increase_rounded,
-            title: 'Large type',
-            selected: preferences.largerText,
-            onTap: () => onChanged(
-              preferences.copyWith(largerText: !preferences.largerText),
+            SizedBox(
+              width: width,
+              child: _SignalChoice(
+                icon: Icons.vibration_rounded,
+                title: 'Haptics',
+                selected: preferences.vibrationAlerts,
+                onTap: () => onChanged(
+                  preferences.copyWith(
+                    vibrationAlerts: !preferences.vibrationAlerts,
+                  ),
+                ),
+              ),
             ),
-          ),
-        ),
-      ],
+            SizedBox(
+              width: width,
+              child: _SignalChoice(
+                icon: Icons.text_increase_rounded,
+                title: 'Large type',
+                selected: preferences.largerText,
+                onTap: () => onChanged(
+                  preferences.copyWith(largerText: !preferences.largerText),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -1037,7 +1030,6 @@ class _SignalChoice extends StatelessWidget {
       child: AnimatedContainer(
         duration: duration,
         curve: Curves.easeOutCubic,
-        height: 116,
         decoration: BoxDecoration(
           color: selected
               ? Theme.of(context).colorScheme.primaryContainer
@@ -1050,29 +1042,30 @@ class _SignalChoice extends StatelessWidget {
             HapticFeedback.selectionClick();
             onTap();
           },
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 14),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                AnimatedSwitcher(
-                  duration: duration,
-                  child: Icon(
-                    selected ? Icons.check_circle_rounded : icon,
-                    key: ValueKey(selected),
-                    color: Theme.of(context).colorScheme.primary,
-                    size: 30,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 116),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 14),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  AnimatedSwitcher(
+                    duration: duration,
+                    child: Icon(
+                      selected ? Icons.check_circle_rounded : icon,
+                      key: ValueKey(selected),
+                      color: Theme.of(context).colorScheme.primary,
+                      size: 30,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 10),
-                Text(
-                  title,
-                  textAlign: TextAlign.center,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-              ],
+                  const SizedBox(height: 10),
+                  Text(
+                    title,
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ],
+              ),
             ),
           ),
         ),

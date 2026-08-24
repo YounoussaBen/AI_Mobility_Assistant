@@ -43,6 +43,10 @@ dependencies:
   geolocator: ^14.0.3
   dio: ^5.11.0
   speech_to_text: ^7.4.0
+  flutter_tts: ^4.2.5
+  # v13 currently requires a newer Android/Kotlin plugin than Flutter 3.32.
+  permission_handler: 12.0.1
+  ultralytics_yolo: ^0.6.13
 
 dev_dependencies:
   flutter_test:

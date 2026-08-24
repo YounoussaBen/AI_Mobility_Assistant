@@ -48,6 +48,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               subtitle: 'Accessibility and guidance',
               onTap: () => context.push('/preferences?edit=true'),
             ),
+            _SettingsRow(
+              title: 'Voice and guidance',
+              subtitle: 'Voice, speed, detail, captions, and haptics',
+              onTap: () => context.push('/voice-guidance'),
+            ),
             const SizedBox(height: 34),
             const _SectionTitle('Map'),
             const SizedBox(height: 16),

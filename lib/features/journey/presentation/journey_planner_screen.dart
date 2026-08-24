@@ -3,28 +3,45 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
 import '../../../app/config/app_config.dart';
+import '../../auth/data/auth_repository.dart';
+import '../../companion/domain/companion_models.dart';
+import '../../preferences/application/mobility_preferences_controller.dart';
+import '../../preferences/domain/mobility_preferences.dart';
+import '../../voice/application/voice_profile_controller.dart';
+import '../../voice/data/speech_output_service.dart';
+import '../application/journey_session_controller.dart';
 import '../data/gemini_destination_service.dart';
 import '../data/google_places_service.dart';
 import '../data/google_routes_service.dart';
 import '../domain/place.dart';
 import '../domain/route_option.dart';
+import '../domain/route_recommendation.dart';
 
-class JourneyPlannerScreen extends StatefulWidget {
-  const JourneyPlannerScreen({super.key, this.startWithVoice = false});
+class JourneyPlannerScreen extends ConsumerStatefulWidget {
+  const JourneyPlannerScreen({
+    super.key,
+    this.startWithVoice = false,
+    this.initialPrompt,
+  });
 
   final bool startWithVoice;
+  final String? initialPrompt;
 
   @override
-  State<JourneyPlannerScreen> createState() => _JourneyPlannerScreenState();
+  ConsumerState<JourneyPlannerScreen> createState() =>
+      _JourneyPlannerScreenState();
 }
 
-class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
+class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
+    with WidgetsBindingObserver {
   static const _accra = LatLng(5.6037, -0.1870);
 
   late final GooglePlacesService _places;
@@ -35,35 +52,51 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
   final _searchFocus = FocusNode();
   final _random = math.Random.secure();
 
-  GoogleMapController? _mapController;
   Timer? _searchDebounce;
+  GoogleMapController? _mapController;
   LatLng? _origin;
   JourneyPlace? _destination;
   List<PlaceSuggestion> _suggestions = const [];
-  List<JourneyRouteOption> _routes = const [];
+  List<RankedRoute> _rankedRoutes = const [];
   JourneyTravelMode? _selectedMode;
   _LocationState _locationState = _LocationState.loading;
   String _sessionToken = '';
   String? _message;
   bool _searching = false;
+  bool _loadingRoutes = false;
   bool _listening = false;
   bool _understandingSpeech = false;
+  bool _showMap = false;
   int _searchGeneration = 0;
 
   @override
   void initState() {
     super.initState();
-    _places = GooglePlacesService(apiKey: AppConfig.googleMapsApiKey);
-    _routesService = GoogleRoutesService(apiKey: AppConfig.googleMapsApiKey);
+    WidgetsBinding.instance.addObserver(this);
+    _places = GooglePlacesService(
+      apiKey: AppConfig.googleMapsWebServiceApiKey,
+      backendUrl: AppConfig.companionBackendUrl,
+      accessToken: ref.read(authRepositoryProvider).idToken,
+    );
+    _routesService = GoogleRoutesService(
+      apiKey: AppConfig.googleMapsWebServiceApiKey,
+      backendUrl: AppConfig.companionBackendUrl,
+      accessToken: ref.read(authRepositoryProvider).idToken,
+    );
     _gemini = GeminiDestinationService(
       apiKey: AppConfig.geminiApiKey,
       model: AppConfig.geminiModel,
+      backendUrl: AppConfig.companionBackendUrl,
+      accessToken: ref.read(authRepositoryProvider).idToken,
     );
     _sessionToken = _newSessionToken();
     unawaited(_loadCurrentLocation());
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _dismissKeyboard();
-      if (widget.startWithVoice) {
+      final prompt = widget.initialPrompt?.trim();
+      if (prompt?.isNotEmpty == true) {
+        _searchController.text = prompt!;
+        unawaited(_searchPlaces(prompt));
+      } else if (widget.startWithVoice) {
         unawaited(_startListening());
       }
     });
@@ -71,6 +104,7 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _searchDebounce?.cancel();
     _searchController.dispose();
     _searchFocus.dispose();
@@ -79,30 +113,29 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
     super.dispose();
   }
 
-  String _newSessionToken() {
-    return '${DateTime.now().microsecondsSinceEpoch}-${_random.nextInt(1 << 32)}';
-  }
-
-  void _dismissKeyboard() {
-    FocusManager.instance.primaryFocus?.unfocus();
-    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
-  }
-
-  Future<void> _loadCurrentLocation() async {
-    if (mounted) {
-      setState(() {
-        _locationState = _LocationState.loading;
-        _message = null;
-      });
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed &&
+        (_locationState == _LocationState.serviceOff ||
+            _locationState == _LocationState.deniedForever)) {
+      unawaited(_loadCurrentLocation());
     }
+  }
 
+  String _newSessionToken() =>
+      '${DateTime.now().microsecondsSinceEpoch}-${_random.nextInt(1 << 32)}';
+
+  Future<void> _loadCurrentLocation({bool requestPermission = false}) async {
+    if (mounted) {
+      setState(() => _locationState = _LocationState.loading);
+    }
     if (!await Geolocator.isLocationServiceEnabled()) {
       if (mounted) setState(() => _locationState = _LocationState.serviceOff);
       return;
     }
 
     var permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
+    if (permission == LocationPermission.denied && requestPermission) {
       permission = await Geolocator.requestPermission();
     }
     if (permission == LocationPermission.denied) {
@@ -124,14 +157,10 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
         ),
       );
       if (!mounted) return;
-      final origin = LatLng(position.latitude, position.longitude);
       setState(() {
-        _origin = origin;
+        _origin = LatLng(position.latitude, position.longitude);
         _locationState = _LocationState.ready;
       });
-      await _mapController?.animateCamera(
-        CameraUpdate.newLatLngZoom(origin, 15),
-      );
       if (_destination != null) unawaited(_loadRoutes());
     } on TimeoutException {
       if (mounted) setState(() => _locationState = _LocationState.unavailable);
@@ -147,8 +176,9 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
       _message = null;
       if (_destination != null && query != _destination!.name) {
         _destination = null;
-        _routes = const [];
+        _rankedRoutes = const [];
         _selectedMode = null;
+        _showMap = false;
       }
       if (query.length < 2) {
         _suggestions = const [];
@@ -167,7 +197,11 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
     setState(() {
       _searching = true;
       _message = null;
+      _suggestions = const [];
     });
+    ref
+        .read(journeySessionControllerProvider.notifier)
+        .setPhase(CompanionPhase.clarifying);
     try {
       final suggestions = await _places.autocomplete(
         input: query,
@@ -178,30 +212,32 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
       setState(() {
         _suggestions = suggestions;
         _searching = false;
-        if (suggestions.isEmpty) {
-          _message = 'No matching places found. Try a wider search.';
-        }
+        _message = suggestions.isEmpty
+            ? 'No matching places were found. Try a place name and area.'
+            : null;
       });
     } catch (_) {
       if (!mounted || generation != _searchGeneration) return;
       setState(() {
         _suggestions = const [];
         _searching = false;
-        _message = 'We couldn’t search for places right now. Please try again.';
+        _message =
+            AppConfig.googleMapsWebServiceApiKey.isEmpty &&
+                AppConfig.companionBackendUrl.isEmpty
+            ? 'Place search needs a configured Maps web-service connection.'
+            : 'Place search is unavailable right now. Try again.';
       });
     }
   }
 
   Future<void> _selectSuggestion(PlaceSuggestion suggestion) async {
     HapticFeedback.selectionClick();
-    _searchDebounce?.cancel();
-    _dismissKeyboard();
+    FocusManager.instance.primaryFocus?.unfocus();
     setState(() {
       _suggestions = const [];
-      _searching = false;
+      _searching = true;
       _message = null;
     });
-
     try {
       final destination = await _places.details(
         placeId: suggestion.placeId,
@@ -213,12 +249,21 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
         text: destination.name,
         selection: TextSelection.collapsed(offset: destination.name.length),
       );
-      setState(() => _destination = destination);
+      setState(() {
+        _destination = destination;
+        _searching = false;
+        _message = null;
+      });
+      ref
+          .read(journeySessionControllerProvider.notifier)
+          .destinationConfirmed(destination);
       await _loadRoutes();
     } catch (_) {
       if (!mounted) return;
       setState(() {
-        _message = 'We couldn’t open that destination. Please choose another.';
+        _searching = false;
+        _message =
+            'That destination could not be opened. Choose another result.';
       });
     }
   }
@@ -228,60 +273,56 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
     final destination = _destination;
     if (destination == null) return;
     if (origin == null) {
-      setState(() {
-        _message =
-            'Turn on location access to calculate routes from where you are.';
-      });
       return;
     }
 
     setState(() {
-      _routes = const [];
+      _loadingRoutes = true;
+      _rankedRoutes = const [];
       _selectedMode = null;
       _message = null;
     });
+    ref
+        .read(journeySessionControllerProvider.notifier)
+        .setPhase(CompanionPhase.checkingRoutes);
+
     final routes = await _routesService.routes(
       origin: origin,
       destination: destination.location,
     );
     if (!mounted) return;
+    final preferences =
+        ref.read(mobilityPreferencesControllerProvider).value ??
+        const MobilityPreferences();
+    final ranked = RouteRanker.rank(routes, preferences);
+    final selected = ranked.firstOrNull?.route.mode;
     setState(() {
-      _routes = routes;
-      _selectedMode = routes
-          .where((route) => route.mode == JourneyTravelMode.driving)
-          .firstOrNull
-          ?.mode;
-      _selectedMode ??= routes.firstOrNull?.mode;
-      if (routes.isEmpty) {
-        _message = 'No route options are available for this destination.';
-      }
+      _loadingRoutes = false;
+      _rankedRoutes = ranked;
+      _selectedMode = selected;
+      _message = ranked.isEmpty
+          ? AppConfig.googleMapsWebServiceApiKey.isEmpty &&
+                    AppConfig.companionBackendUrl.isEmpty
+                ? 'Route comparison needs a configured Maps web-service connection.'
+                : 'No verified route options are available right now.'
+          : null;
     });
-    if (routes.isNotEmpty) await _fitJourney(origin, destination.location);
+    final controller = ref.read(journeySessionControllerProvider.notifier);
+    controller.routesReady([
+      for (final rankedRoute in ranked) rankedRoute.route,
+    ]);
+    if (selected != null) controller.selectRoute(selected);
   }
 
-  Future<void> _fitJourney(LatLng origin, LatLng destination) async {
-    final controller = _mapController;
-    if (controller == null) return;
-    final southwest = LatLng(
-      math.min(origin.latitude, destination.latitude),
-      math.min(origin.longitude, destination.longitude),
-    );
-    final northeast = LatLng(
-      math.max(origin.latitude, destination.latitude),
-      math.max(origin.longitude, destination.longitude),
-    );
-    try {
-      await controller.animateCamera(
-        CameraUpdate.newLatLngBounds(
-          LatLngBounds(southwest: southwest, northeast: northeast),
-          84,
-        ),
-      );
-    } catch (_) {
-      await controller.animateCamera(
-        CameraUpdate.newLatLngZoom(destination, 14),
-      );
+  Future<void> _submitSearch() async {
+    _searchDebounce?.cancel();
+    final query = _searchController.text.trim();
+    if (query.length < 2) {
+      setState(() => _message = 'Enter a destination or place category.');
+      return;
     }
+    FocusManager.instance.primaryFocus?.unfocus();
+    await _searchPlaces(query);
   }
 
   Future<void> _startListening() async {
@@ -290,7 +331,6 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
       if (mounted) setState(() => _listening = false);
       return;
     }
-
     final available = await _speech.initialize(
       options: [SpeechToText.androidNoBluetooth],
       onStatus: (status) {
@@ -303,22 +343,18 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
         if (!mounted) return;
         setState(() {
           _listening = false;
-          _message =
-              'Voice input stopped. You can type the destination instead.';
+          _message = 'Voice input stopped. Type the destination instead.';
         });
       },
     );
     if (!available) {
       if (mounted) {
-        setState(() {
-          _message =
-              'Voice input isn’t available. Type the destination instead.';
-        });
+        setState(() => _message = 'Voice input is unavailable on this device.');
       }
       return;
     }
-
-    _dismissKeyboard();
+    FocusManager.instance.primaryFocus?.unfocus();
+    HapticFeedback.mediumImpact();
     setState(() {
       _listening = true;
       _message = null;
@@ -343,38 +379,37 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
       text: words,
       selection: TextSelection.collapsed(offset: words.length),
     );
-    if (result.finalResult) {
-      unawaited(_understandSpeech(words));
-    }
+    setState(() {});
+    if (result.finalResult) unawaited(_understandSpeech(words));
   }
 
   Future<void> _understandSpeech(String transcript) async {
     setState(() {
       _listening = false;
-      _understandingSpeech = _gemini.isConfigured;
+      _understandingSpeech = true;
       _message = null;
     });
-    final destination = await _gemini.destinationFromSpeech(transcript);
+    final command = await _gemini.interpret(transcript);
     if (!mounted) return;
+    setState(() => _understandingSpeech = false);
+    if (command.action == CompanionAction.lookAhead) {
+      context.push('/look-ahead');
+      return;
+    }
+    final destination = command.query?.trim();
+    if (command.action != CompanionAction.searchPlaces ||
+        destination == null ||
+        destination.length < 2) {
+      setState(() {
+        _message = 'Tell me a destination, such as “nearest pharmacy”.';
+      });
+      return;
+    }
     _searchController.value = TextEditingValue(
       text: destination,
       selection: TextSelection.collapsed(offset: destination.length),
     );
-    setState(() {
-      _understandingSpeech = false;
-      _message = null;
-    });
     await _searchPlaces(destination);
-  }
-
-  Future<void> _submitSearch() async {
-    _searchDebounce?.cancel();
-    final query = _searchController.text.trim();
-    if (query.length < 2) return;
-    await _searchPlaces(query);
-    if (mounted && _suggestions.isNotEmpty) {
-      await _selectSuggestion(_suggestions.first);
-    }
   }
 
   Future<void> _openLocationSettings() async {
@@ -385,84 +420,137 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
     }
   }
 
-  Set<Polyline> _buildPolylines(Color primary, Color secondary) {
-    return _routes.map((route) {
-      final selected = route.mode == _selectedMode;
-      return Polyline(
-        polylineId: PolylineId(route.mode.name),
-        points: route.path,
-        color: selected ? primary : secondary.withValues(alpha: 0.72),
-        width: selected ? 7 : 4,
-        zIndex: selected ? 2 : 1,
-        consumeTapEvents: true,
-        onTap: () => setState(() => _selectedMode = route.mode),
+  void _selectRoute(JourneyTravelMode mode) {
+    HapticFeedback.selectionClick();
+    setState(() => _selectedMode = mode);
+    ref.read(journeySessionControllerProvider.notifier).selectRoute(mode);
+    if (_showMap) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _fitMap());
+    }
+  }
+
+  Future<void> _hearRoute(RankedRoute ranked) async {
+    final route = ranked.route;
+    final walking = route.walkingDistanceMeters;
+    final text =
+        '${ranked.title}. ${ranked.explanation} '
+        '${route.durationLabel}, ${route.distanceLabel}. '
+        '${walking == null ? '' : 'Verified walking: $walking metres. '}'
+        'Step-free access data is unavailable.';
+    try {
+      final profile = await ref.read(voiceProfileControllerProvider.future);
+      await ref.read(speechOutputServiceProvider).speak(text, profile);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Voice playback is unavailable.')),
       );
-    }).toSet();
+    }
+  }
+
+  Future<void> _startJourney(RankedRoute ranked) async {
+    _selectRoute(ranked.route.mode);
+    ref.read(journeySessionControllerProvider.notifier).startJourney();
+    if (!mounted) return;
+    context.push('/guidance');
+  }
+
+  Future<void> _fitMap() async {
+    final controller = _mapController;
+    final route = _rankedRoutes
+        .where((item) => item.route.mode == _selectedMode)
+        .firstOrNull
+        ?.route;
+    if (controller == null || route == null || route.path.isEmpty) return;
+    var minLat = route.path.first.latitude;
+    var maxLat = minLat;
+    var minLng = route.path.first.longitude;
+    var maxLng = minLng;
+    for (final point in route.path.skip(1)) {
+      minLat = math.min(minLat, point.latitude);
+      maxLat = math.max(maxLat, point.latitude);
+      minLng = math.min(minLng, point.longitude);
+      maxLng = math.max(maxLng, point.longitude);
+    }
+    try {
+      await controller.animateCamera(
+        CameraUpdate.newLatLngBounds(
+          LatLngBounds(
+            southwest: LatLng(minLat, minLng),
+            northeast: LatLng(maxLat, maxLng),
+          ),
+          48,
+        ),
+      );
+    } catch (_) {
+      await controller.animateCamera(
+        CameraUpdate.newLatLngZoom(_destination?.location ?? _accra, 14),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final initialTarget = _origin ?? _accra;
+    final phase = _listening
+        ? CompanionPhase.listening
+        : _understandingSpeech
+        ? CompanionPhase.understanding
+        : _loadingRoutes
+        ? CompanionPhase.checkingRoutes
+        : _rankedRoutes.isNotEmpty
+        ? CompanionPhase.routeReady
+        : CompanionPhase.clarifying;
 
     return Scaffold(
-      resizeToAvoidBottomInset: false,
-      body: SizedBox.expand(
-        child: Stack(
-          fit: StackFit.expand,
+      appBar: AppBar(
+        leading: IconButton(
+          tooltip: 'Back',
+          onPressed: () => context.pop(),
+          icon: const Icon(Icons.arrow_back_rounded),
+        ),
+        title: const Text('Plan with Mobility AI'),
+        actions: [
+          IconButton(
+            tooltip: 'Voice and guidance settings',
+            onPressed: () => context.push('/voice-guidance'),
+            icon: const Icon(Icons.record_voice_over_outlined),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        top: false,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 40),
           children: [
-            Positioned.fill(
-              child: GoogleMap(
-                initialCameraPosition: CameraPosition(
-                  target: initialTarget,
-                  zoom: _origin == null ? 12 : 15,
-                ),
-                myLocationEnabled: _locationState == _LocationState.ready,
-                myLocationButtonEnabled: _locationState == _LocationState.ready,
-                compassEnabled: true,
-                mapToolbarEnabled: false,
-                zoomControlsEnabled: false,
-                padding: EdgeInsets.only(
-                  top: 150,
-                  bottom: _routes.isEmpty ? 44 : 190,
-                ),
-                markers: {
-                  if (_destination != null)
-                    Marker(
-                      markerId: const MarkerId('destination'),
-                      position: _destination!.location,
-                      infoWindow: InfoWindow(title: _destination!.name),
-                    ),
-                },
-                polylines: _buildPolylines(
-                  scheme.primary,
-                  scheme.outlineVariant,
-                ),
-                onMapCreated: (controller) {
-                  _mapController = controller;
-                  if (_origin != null && _destination == null) {
-                    unawaited(
-                      controller.animateCamera(
-                        CameraUpdate.newLatLngZoom(_origin!, 15),
-                      ),
-                    );
-                  }
-                },
-              ),
-            ),
-            SafeArea(
-              bottom: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 760),
                 child: Column(
-                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    _SearchCard(
+                    _PlannerStatus(phase: phase),
+                    const SizedBox(height: 18),
+                    Text(
+                      _destination == null
+                          ? 'Where should we go?'
+                          : 'Here’s what I verified',
+                      style: Theme.of(context).textTheme.headlineLarge,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _destination == null
+                          ? 'Say or type a place. You’ll confirm the exact result before I compare routes.'
+                          : 'Choose a route after reviewing the reason and any missing information.',
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+                    _DestinationComposer(
                       controller: _searchController,
                       focusNode: _searchFocus,
-                      isListening: _listening,
-                      isBusy: _searching || _understandingSpeech,
-                      onBack: () => Navigator.of(context).pop(),
+                      listening: _listening,
+                      busy: _searching || _understandingSpeech,
                       onChanged: _onQueryChanged,
                       onSubmitted: (_) => _submitSearch(),
                       onVoice: _startListening,
@@ -472,49 +560,103 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
                         setState(() {
                           _destination = null;
                           _suggestions = const [];
-                          _routes = const [];
+                          _rankedRoutes = const [];
                           _selectedMode = null;
                           _message = null;
+                          _showMap = false;
                         });
                       },
                     ),
-                    const SizedBox(height: 8),
-                    if (_suggestions.isNotEmpty)
+                    if (_locationState.needsAttention) ...[
+                      const SizedBox(height: 12),
+                      _LocationIssue(
+                        state: _locationState,
+                        onRetry: () => _loadCurrentLocation(
+                          requestPermission:
+                              _locationState == _LocationState.denied,
+                        ),
+                        onSettings: _openLocationSettings,
+                      ),
+                    ],
+                    if (_message != null) ...[
+                      const SizedBox(height: 12),
+                      _InlineMessage(message: _message!),
+                    ],
+                    if (_suggestions.isNotEmpty) ...[
+                      const SizedBox(height: 12),
                       _SuggestionsCard(
                         suggestions: _suggestions,
                         onSelected: _selectSuggestion,
-                      )
-                    else if (_message != null)
-                      _MessageCard(message: _message!)
-                    else if (_locationState != _LocationState.ready &&
-                        _locationState != _LocationState.loading)
-                      _LocationCard(
-                        state: _locationState,
-                        onRetry: _loadCurrentLocation,
-                        onSettings: _openLocationSettings,
                       ),
+                    ],
+                    if (_destination != null) ...[
+                      const SizedBox(height: 20),
+                      _ConfirmedDestinationCard(destination: _destination!),
+                    ],
+                    if (_loadingRoutes) ...[
+                      const SizedBox(height: 14),
+                      const _RouteLoadingSkeleton(),
+                    ],
+                    if (_rankedRoutes.isNotEmpty) ...[
+                      const SizedBox(height: 26),
+                      Text(
+                        'Route choices',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 5),
+                      Text(
+                        'Compared by app rules using your saved travel preferences.',
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                      const SizedBox(height: 12),
+                      for (final ranked in _rankedRoutes) ...[
+                        _RouteDecisionCard(
+                          ranked: ranked,
+                          selected: ranked.route.mode == _selectedMode,
+                          onSelect: () => _selectRoute(ranked.route.mode),
+                          onHear: () => _hearRoute(ranked),
+                          onStart: () => _startJourney(ranked),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      OutlinedButton.icon(
+                        onPressed: () {
+                          setState(() => _showMap = !_showMap);
+                          if (_showMap) {
+                            WidgetsBinding.instance.addPostFrameCallback(
+                              (_) => _fitMap(),
+                            );
+                          }
+                        },
+                        icon: Icon(
+                          _showMap
+                              ? Icons.visibility_off_outlined
+                              : Icons.map_outlined,
+                        ),
+                        label: Text(_showMap ? 'Hide map' : 'Show map preview'),
+                      ),
+                      if (_showMap) ...[
+                        const SizedBox(height: 12),
+                        _MapPreview(
+                          origin: _origin,
+                          destination: _destination,
+                          routes: [
+                            for (final ranked in _rankedRoutes) ranked.route,
+                          ],
+                          selectedMode: _selectedMode,
+                          onCreated: (controller) {
+                            _mapController = controller;
+                            unawaited(_fitMap());
+                          },
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      const _WalkingSafetyNotice(),
+                    ],
                   ],
                 ),
               ),
             ),
-            if (_routes.isNotEmpty && _destination != null)
-              Positioned(
-                left: 12,
-                right: 12,
-                bottom: 12,
-                child: SafeArea(
-                  top: false,
-                  child: _RouteOptionsCard(
-                    destination: _destination!,
-                    routes: _routes,
-                    selectedMode: _selectedMode,
-                    onSelected: (mode) {
-                      HapticFeedback.selectionClick();
-                      setState(() => _selectedMode = mode);
-                    },
-                  ),
-                ),
-              ),
           ],
         ),
       ),
@@ -531,13 +673,57 @@ enum _LocationState {
   unavailable,
 }
 
-class _SearchCard extends StatelessWidget {
-  const _SearchCard({
+extension on _LocationState {
+  bool get needsAttention =>
+      this != _LocationState.loading && this != _LocationState.ready;
+}
+
+class _PlannerStatus extends StatelessWidget {
+  const _PlannerStatus({required this.phase});
+
+  final CompanionPhase phase;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      liveRegion: true,
+      label: phase.assistiveDescription,
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.primaryContainer,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              phase == CompanionPhase.checkingRoutes
+                  ? Icons.sync_rounded
+                  : Icons.auto_awesome_rounded,
+              size: 19,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Text(
+              phase.label,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DestinationComposer extends StatelessWidget {
+  const _DestinationComposer({
     required this.controller,
     required this.focusNode,
-    required this.isListening,
-    required this.isBusy,
-    required this.onBack,
+    required this.listening,
+    required this.busy,
     required this.onChanged,
     required this.onSubmitted,
     required this.onVoice,
@@ -546,9 +732,8 @@ class _SearchCard extends StatelessWidget {
 
   final TextEditingController controller;
   final FocusNode focusNode;
-  final bool isListening;
-  final bool isBusy;
-  final VoidCallback onBack;
+  final bool listening;
+  final bool busy;
   final ValueChanged<String> onChanged;
   final ValueChanged<String> onSubmitted;
   final VoidCallback onVoice;
@@ -556,64 +741,159 @@ class _SearchCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Theme.of(context).colorScheme.surface,
-      elevation: 3,
-      shadowColor: Colors.black26,
-      borderRadius: BorderRadius.circular(18),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
+    return TextField(
+      controller: controller,
+      focusNode: focusNode,
+      textInputAction: TextInputAction.search,
+      onChanged: onChanged,
+      onSubmitted: onSubmitted,
+      decoration: InputDecoration(
+        labelText: 'Destination',
+        hintText: 'Place, address, or category',
+        prefixIcon: const Icon(Icons.place_outlined),
+        suffixIcon: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (controller.text.isNotEmpty)
               IconButton(
-                tooltip: 'Back',
-                onPressed: onBack,
-                icon: const Icon(Icons.arrow_back_rounded),
+                tooltip: 'Clear destination',
+                onPressed: onClear,
+                icon: const Icon(Icons.close_rounded),
               ),
-              Expanded(
-                child: TextField(
-                  controller: controller,
-                  focusNode: focusNode,
-                  autofocus: false,
-                  textInputAction: TextInputAction.search,
-                  keyboardType: TextInputType.text,
-                  decoration: const InputDecoration(
-                    hintText: 'Where are you going?',
-                    filled: false,
-                    border: InputBorder.none,
-                    enabledBorder: InputBorder.none,
-                    focusedBorder: InputBorder.none,
-                    contentPadding: EdgeInsets.symmetric(vertical: 17),
+            IconButton(
+              tooltip: listening ? 'Stop listening' : 'Speak destination',
+              onPressed: busy && !listening ? null : onVoice,
+              icon: Icon(
+                listening ? Icons.stop_circle_outlined : Icons.mic_rounded,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LocationIssue extends StatelessWidget {
+  const _LocationIssue({
+    required this.state,
+    required this.onRetry,
+    required this.onSettings,
+  });
+
+  final _LocationState state;
+  final VoidCallback onRetry;
+  final VoidCallback onSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    final (icon, title, subtitle, action) = switch (state) {
+      _LocationState.serviceOff => (
+        Icons.location_disabled_outlined,
+        'Location is off',
+        'Turn it on to compare routes from where you are.',
+        'Turn on location',
+      ),
+      _LocationState.denied => (
+        Icons.location_on_outlined,
+        'Your location is needed',
+        'Use it to compare routes from where you are.',
+        'Use my location',
+      ),
+      _LocationState.deniedForever => (
+        Icons.settings_outlined,
+        'Location access is blocked',
+        'Turn it on in settings to compare routes.',
+        'Open settings',
+      ),
+      _LocationState.unavailable => (
+        Icons.gps_off_rounded,
+        'Can’t find your location',
+        'Move to an open area, then try again.',
+        'Try again',
+      ),
+      _LocationState.loading || _LocationState.ready => throw StateError(
+        'Location issues are shown only when attention is needed.',
+      ),
+    };
+    final opensSettings =
+        state == _LocationState.serviceOff ||
+        state == _LocationState.deniedForever;
+    final scheme = Theme.of(context).colorScheme;
+    return Semantics(
+      liveRegion: true,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+        decoration: BoxDecoration(
+          color: scheme.errorContainer.withValues(alpha: 0.36),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(icon, color: scheme.onErrorContainer),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ],
                   ),
-                  onChanged: onChanged,
-                  onSubmitted: onSubmitted,
                 ),
+              ],
+            ),
+            Align(
+              alignment: AlignmentDirectional.centerEnd,
+              child: TextButton(
+                onPressed: opensSettings ? onSettings : onRetry,
+                child: Text(action),
               ),
-              if (controller.text.isNotEmpty)
-                IconButton(
-                  tooltip: 'Clear destination',
-                  onPressed: onClear,
-                  icon: const Icon(Icons.close_rounded),
-                ),
-              IconButton(
-                tooltip: isListening ? 'Stop listening' : 'Speak destination',
-                onPressed: onVoice,
-                color: isListening
-                    ? Theme.of(context).colorScheme.error
-                    : Theme.of(context).colorScheme.primary,
-                icon: Icon(
-                  isListening ? Icons.stop_circle_outlined : Icons.mic_rounded,
-                ),
-              ),
-              const SizedBox(width: 4),
-            ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InlineMessage extends StatelessWidget {
+  const _InlineMessage({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      liveRegion: true,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.info_outline_rounded,
+            size: 20,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
-          if (isBusy)
-            const LinearProgressIndicator(minHeight: 2)
-          else
-            const SizedBox(height: 2),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(
+              message,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -628,180 +908,112 @@ class _SuggestionsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Theme.of(context).colorScheme.surface,
-      elevation: 3,
-      shadowColor: Colors.black26,
-      borderRadius: BorderRadius.circular(18),
-      clipBehavior: Clip.antiAlias,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxHeight: 320),
-        child: ListView.separated(
-          shrinkWrap: true,
-          padding: EdgeInsets.zero,
-          itemCount: suggestions.length,
-          separatorBuilder: (_, _) => const Divider(height: 1, indent: 56),
-          itemBuilder: (context, index) {
-            final suggestion = suggestions[index];
-            return ListTile(
-              minTileHeight: 62,
-              leading: const Icon(Icons.location_on_outlined),
-              title: Text(suggestion.primaryText),
-              subtitle: suggestion.secondaryText.isEmpty
-                  ? null
-                  : Text(
-                      suggestion.secondaryText,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-              onTap: () => onSelected(suggestion),
-            );
-          },
-        ),
-      ),
-    );
-  }
-}
-
-class _MessageCard extends StatelessWidget {
-  const _MessageCard({required this.message});
-
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      liveRegion: true,
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-          child: Row(
-            children: [
-              const Icon(Icons.info_outline_rounded),
-              const SizedBox(width: 12),
-              Expanded(child: Text(message)),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _LocationCard extends StatelessWidget {
-  const _LocationCard({
-    required this.state,
-    required this.onRetry,
-    required this.onSettings,
-  });
-
-  final _LocationState state;
-  final VoidCallback onRetry;
-  final VoidCallback onSettings;
-
-  @override
-  Widget build(BuildContext context) {
-    final (message, action, openSettings) = switch (state) {
-      _LocationState.loading => ('Finding your current location…', null, false),
-      _LocationState.serviceOff => (
-        'Turn on location services to calculate your journey.',
-        'Settings',
-        true,
-      ),
-      _LocationState.denied => (
-        'Allow location access to calculate your journey.',
-        'Try again',
-        false,
-      ),
-      _LocationState.deniedForever => (
-        'Allow location access in Settings to calculate your journey.',
-        'Settings',
-        true,
-      ),
-      _LocationState.unavailable => (
-        'Your current location is temporarily unavailable.',
-        'Retry',
-        false,
-      ),
-      _LocationState.ready => throw StateError('Ready is not displayed'),
-    };
-
-    return Semantics(
-      liveRegion: true,
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
-          child: Row(
-            children: [
-              if (state == _LocationState.loading)
-                const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2.2),
-                )
-              else
-                const Icon(Icons.my_location_rounded),
-              const SizedBox(width: 12),
-              Expanded(child: Text(message)),
-              if (action != null)
-                TextButton(
-                  onPressed: openSettings ? onSettings : onRetry,
-                  child: Text(action),
+    return Card(
+      child: Column(
+        children: [
+          for (var index = 0; index < suggestions.length; index++) ...[
+            InkWell(
+              onTap: () => onSelected(suggestions[index]),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 68),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Icon(
+                          Icons.location_on_outlined,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 13),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              suggestions[index].primaryText,
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                            if (suggestions[index]
+                                .secondaryText
+                                .isNotEmpty) ...[
+                              const SizedBox(height: 3),
+                              Text(
+                                suggestions[index].secondaryText,
+                                style: Theme.of(context).textTheme.bodyMedium,
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      const Icon(Icons.chevron_right_rounded),
+                    ],
+                  ),
                 ),
-            ],
-          ),
-        ),
+              ),
+            ),
+            if (index != suggestions.length - 1) const Divider(height: 1),
+          ],
+        ],
       ),
     );
   }
 }
 
-class _RouteOptionsCard extends StatelessWidget {
-  const _RouteOptionsCard({
-    required this.destination,
-    required this.routes,
-    required this.selectedMode,
-    required this.onSelected,
-  });
+class _ConfirmedDestinationCard extends StatelessWidget {
+  const _ConfirmedDestinationCard({required this.destination});
 
   final JourneyPlace destination;
-  final List<JourneyRouteOption> routes;
-  final JourneyTravelMode? selectedMode;
-  final ValueChanged<JourneyTravelMode> onSelected;
 
   @override
   Widget build(BuildContext context) {
     return Card(
-      elevation: 4,
-      shadowColor: Colors.black26,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        padding: const EdgeInsets.all(18),
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              destination.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleMedium,
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primaryContainer,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(
+                Icons.flag_outlined,
+                color: Theme.of(context).colorScheme.primary,
+              ),
             ),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 82,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                itemCount: routes.length,
-                separatorBuilder: (_, _) => const SizedBox(width: 10),
-                itemBuilder: (context, index) {
-                  final route = routes[index];
-                  final selected = route.mode == selectedMode;
-                  return _RouteOptionButton(
-                    route: route,
-                    selected: selected,
-                    onTap: () => onSelected(route.mode),
-                  );
-                },
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Confirmed destination',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    destination.name,
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  if (destination.address.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      destination.address,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ],
+                ],
               ),
             ),
           ],
@@ -811,71 +1023,432 @@ class _RouteOptionsCard extends StatelessWidget {
   }
 }
 
-class _RouteOptionButton extends StatelessWidget {
-  const _RouteOptionButton({
-    required this.route,
-    required this.selected,
-    required this.onTap,
-  });
+class _RouteLoadingSkeleton extends StatefulWidget {
+  const _RouteLoadingSkeleton();
 
-  final JourneyRouteOption route;
-  final bool selected;
-  final VoidCallback onTap;
+  @override
+  State<_RouteLoadingSkeleton> createState() => _RouteLoadingSkeletonState();
+}
+
+class _RouteLoadingSkeletonState extends State<_RouteLoadingSkeleton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  );
+
+  bool? _reduceMotion;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final reduceMotion = MediaQuery.disableAnimationsOf(context);
+    if (_reduceMotion == reduceMotion) return;
+    _reduceMotion = reduceMotion;
+    if (reduceMotion) {
+      _controller
+        ..stop()
+        ..value = 1;
+    } else {
+      _controller.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final placeholder = Theme.of(
+      context,
+    ).colorScheme.onSurface.withValues(alpha: 0.10);
+    return Semantics(
+      liveRegion: true,
+      label: 'Comparing routes.',
+      child: ExcludeSemantics(
+        child: FadeTransition(
+          opacity: Tween<double>(begin: 0.55, end: 1).animate(
+            CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+          ),
+          child: Padding(
+            key: const Key('route_loading_skeleton'),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    _SkeletonShape(
+                      width: 42,
+                      height: 42,
+                      radius: 14,
+                      color: placeholder,
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          FractionallySizedBox(
+                            widthFactor: 0.42,
+                            child: _SkeletonShape(
+                              height: 11,
+                              color: placeholder,
+                            ),
+                          ),
+                          const SizedBox(height: 9),
+                          FractionallySizedBox(
+                            widthFactor: 0.72,
+                            child: _SkeletonShape(
+                              height: 16,
+                              color: placeholder,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _SkeletonShape(
+                        height: 30,
+                        radius: 15,
+                        color: placeholder,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _SkeletonShape(
+                        height: 30,
+                        radius: 15,
+                        color: placeholder,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SkeletonShape extends StatelessWidget {
+  const _SkeletonShape({
+    this.width,
+    required this.height,
+    this.radius = 999,
+    required this.color,
+  });
+
+  final double? width;
+  final double height;
+  final double radius;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(radius),
+      ),
+    );
+  }
+}
+
+class _RouteDecisionCard extends StatelessWidget {
+  const _RouteDecisionCard({
+    required this.ranked,
+    required this.selected,
+    required this.onSelect,
+    required this.onHear,
+    required this.onStart,
+  });
+
+  final RankedRoute ranked;
+  final bool selected;
+  final VoidCallback onSelect;
+  final VoidCallback onHear;
+  final VoidCallback onStart;
+
+  @override
+  Widget build(BuildContext context) {
+    final route = ranked.route;
     final scheme = Theme.of(context).colorScheme;
     return Semantics(
-      button: true,
       selected: selected,
       label:
-          '${route.mode.label}, ${route.durationLabel}, ${route.distanceLabel}',
-      child: Material(
-        color: selected ? scheme.primaryContainer : scheme.surface,
+          '${ranked.title}, ${route.mode.label}, ${route.durationLabel}, '
+          '${route.distanceLabel}. Step-free access data unavailable.',
+      child: Card(
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(20),
           side: BorderSide(
             color: selected ? scheme.primary : scheme.outlineVariant,
             width: selected ? 2 : 1,
           ),
         ),
-        clipBehavior: Clip.antiAlias,
         child: InkWell(
-          onTap: onTap,
-          child: SizedBox(
-            width: 126,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-              child: Row(
-                children: [
-                  Icon(route.mode.icon, size: 24),
-                  const SizedBox(width: 9),
-                  Expanded(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          route.durationLabel,
-                          maxLines: 1,
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        Text(
-                          '${route.mode.label} · ${route.distanceLabel}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(
-                            context,
-                          ).textTheme.bodyMedium?.copyWith(fontSize: 12),
-                        ),
-                      ],
+          onTap: onSelect,
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: scheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Icon(route.mode.icon, color: scheme.primary),
                     ),
+                    const SizedBox(width: 13),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (ranked.isRecommended)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 3),
+                              child: Text(
+                                'RECOMMENDED',
+                                style: Theme.of(context).textTheme.labelLarge
+                                    ?.copyWith(
+                                      color: scheme.primary,
+                                      fontSize: 12,
+                                      letterSpacing: 0.5,
+                                    ),
+                              ),
+                            ),
+                          Text(
+                            ranked.title,
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            route.mode.label,
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ],
+                      ),
+                    ),
+                    Icon(
+                      selected
+                          ? Icons.check_circle_rounded
+                          : Icons.circle_outlined,
+                      color: selected ? scheme.primary : scheme.outline,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    _MetricChip(
+                      icon: Icons.schedule_rounded,
+                      label: route.durationLabel,
+                    ),
+                    _MetricChip(
+                      icon: Icons.straighten_rounded,
+                      label: route.distanceLabel,
+                    ),
+                    if (route.walkingDistanceMeters != null)
+                      _MetricChip(
+                        icon: Icons.directions_walk_rounded,
+                        label: '${route.walkingDistanceMeters} m walking',
+                      ),
+                    if (route.transfers != null)
+                      _MetricChip(
+                        icon: Icons.multiple_stop_rounded,
+                        label: '${route.transfers} transfers',
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 13),
+                Text(
+                  ranked.explanation,
+                  style: Theme.of(context).textTheme.bodyLarge,
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(13),
                   ),
-                ],
-              ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.help_outline_rounded, size: 20),
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Text(
+                          'Step-free access data is unavailable. This route is not labelled accessible.',
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 15),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: onStart,
+                      icon: const Icon(Icons.navigation_rounded),
+                      label: const Text('Start'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: onHear,
+                      icon: const Icon(Icons.volume_up_outlined),
+                      label: const Text('Hear details'),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _MetricChip extends StatelessWidget {
+  const _MetricChip({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 17),
+          const SizedBox(width: 6),
+          Text(label, style: Theme.of(context).textTheme.bodyMedium),
+        ],
+      ),
+    );
+  }
+}
+
+class _MapPreview extends StatelessWidget {
+  const _MapPreview({
+    required this.origin,
+    required this.destination,
+    required this.routes,
+    required this.selectedMode,
+    required this.onCreated,
+  });
+
+  final LatLng? origin;
+  final JourneyPlace? destination;
+  final List<JourneyRouteOption> routes;
+  final JourneyTravelMode? selectedMode;
+  final ValueChanged<GoogleMapController> onCreated;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Semantics(
+      label:
+          'Optional visual route map. Route details are also available as text and speech.',
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: SizedBox(
+          height: 280,
+          child: GoogleMap(
+            initialCameraPosition: CameraPosition(
+              target:
+                  destination?.location ??
+                  origin ??
+                  _JourneyPlannerScreenState._accra,
+              zoom: 13,
+            ),
+            myLocationEnabled: origin != null,
+            myLocationButtonEnabled: false,
+            mapToolbarEnabled: false,
+            zoomControlsEnabled: false,
+            compassEnabled: true,
+            markers: {
+              if (destination != null)
+                Marker(
+                  markerId: const MarkerId('destination'),
+                  position: destination!.location,
+                  infoWindow: InfoWindow(title: destination!.name),
+                ),
+            },
+            polylines: {
+              for (final route in routes)
+                Polyline(
+                  polylineId: PolylineId(route.mode.name),
+                  points: route.path,
+                  color: route.mode == selectedMode
+                      ? scheme.primary
+                      : scheme.outline.withValues(alpha: 0.7),
+                  width: route.mode == selectedMode ? 7 : 4,
+                  zIndex: route.mode == selectedMode ? 2 : 1,
+                ),
+            },
+            onMapCreated: onCreated,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WalkingSafetyNotice extends StatelessWidget {
+  const _WalkingSafetyNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.info_outline_rounded, size: 21),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Text(
+              'Walking routes may not include clear sidewalks or pedestrian paths. '
+              'Check actual conditions and follow local rules.',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ),
+        ],
       ),
     );
   }

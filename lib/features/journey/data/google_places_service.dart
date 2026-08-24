@@ -4,11 +4,27 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../domain/place.dart';
 
 class GooglePlacesService {
-  GooglePlacesService({required String apiKey, Dio? dio})
-    : _apiKey = apiKey,
-      _dio = dio ?? Dio(BaseOptions(baseUrl: 'https://places.googleapis.com'));
+  GooglePlacesService({
+    required String apiKey,
+    String backendUrl = '',
+    Future<String?> Function()? accessToken,
+    Dio? dio,
+  }) : _apiKey = apiKey,
+       _usesBackend = backendUrl.isNotEmpty,
+       _accessToken = accessToken,
+       _dio =
+           dio ??
+           Dio(
+             BaseOptions(
+               baseUrl: backendUrl.isNotEmpty
+                   ? backendUrl.replaceFirst(RegExp(r'/$'), '')
+                   : 'https://places.googleapis.com',
+             ),
+           );
 
   final String _apiKey;
+  final bool _usesBackend;
+  final Future<String?> Function()? _accessToken;
   final Dio _dio;
 
   Future<List<PlaceSuggestion>> autocomplete({
@@ -32,17 +48,19 @@ class GooglePlacesService {
     };
 
     final response = await _dio.post<Map<String, dynamic>>(
-      '/v1/places:autocomplete',
+      _usesBackend ? '/v1/maps/places:autocomplete' : '/v1/places:autocomplete',
       data: body,
-      options: Options(
-        headers: {
-          'X-Goog-Api-Key': _apiKey,
-          'X-Goog-FieldMask':
-              'suggestions.placePrediction.placeId,'
-              'suggestions.placePrediction.structuredFormat.mainText.text,'
-              'suggestions.placePrediction.structuredFormat.secondaryText.text',
-        },
-      ),
+      options: _usesBackend
+          ? await _authenticatedOptions()
+          : Options(
+              headers: {
+                'X-Goog-Api-Key': _apiKey,
+                'X-Goog-FieldMask':
+                    'suggestions.placePrediction.placeId,'
+                    'suggestions.placePrediction.structuredFormat.mainText.text,'
+                    'suggestions.placePrediction.structuredFormat.secondaryText.text',
+              },
+            ),
     );
 
     final suggestions = response.data?['suggestions'] as List<dynamic>? ?? [];
@@ -61,14 +79,16 @@ class GooglePlacesService {
     required String sessionToken,
   }) async {
     final response = await _dio.get<Map<String, dynamic>>(
-      '/v1/places/$placeId',
+      _usesBackend ? '/v1/maps/places/$placeId' : '/v1/places/$placeId',
       queryParameters: {'sessionToken': sessionToken},
-      options: Options(
-        headers: {
-          'X-Goog-Api-Key': _apiKey,
-          'X-Goog-FieldMask': 'id,displayName,formattedAddress,location',
-        },
-      ),
+      options: _usesBackend
+          ? await _authenticatedOptions()
+          : Options(
+              headers: {
+                'X-Goog-Api-Key': _apiKey,
+                'X-Goog-FieldMask': 'id,displayName,formattedAddress,location',
+              },
+            ),
     );
     final data = response.data;
     final location = data?['location'] as Map<String, dynamic>?;
@@ -105,5 +125,11 @@ class GooglePlacesService {
       primaryText: primary,
       secondaryText: secondary ?? '',
     );
+  }
+
+  Future<Options?> _authenticatedOptions() async {
+    final token = await _accessToken?.call();
+    if (token == null || token.isEmpty) return null;
+    return Options(headers: {'Authorization': 'Bearer $token'});
   }
 }
