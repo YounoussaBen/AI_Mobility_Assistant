@@ -259,9 +259,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       case CompanionAction.endJourney:
         await _confirmEndJourney();
       case CompanionAction.conversationalReply:
+        if (!ref.read(journeySessionControllerProvider).hasActiveJourney) {
+          session.setPhase(
+            command.needsClarification
+                ? CompanionPhase.clarifying
+                : CompanionPhase.ready,
+          );
+        }
         _respond(
           command.message ??
-              'I’m here. Ask me about your journey or tell me what to change.',
+              'I’m listening. Tell me a little more so I can follow you.',
         );
       case CompanionAction.unknown:
         if (!ref.read(journeySessionControllerProvider).hasActiveJourney) {

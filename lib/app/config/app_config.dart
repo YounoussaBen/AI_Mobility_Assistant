@@ -4,9 +4,19 @@ abstract final class AppConfig {
   /// Production builds must leave this empty and use the authenticated
   /// companion backend for Places and Routes. It is deliberately separate
   /// from the platform-restricted key used to render Google Maps.
-  static const googleMapsWebServiceApiKey = String.fromEnvironment(
+  static const _googleMapsWebServiceApiKey = String.fromEnvironment(
     'GOOGLE_MAPS_WEB_SERVICE_API_KEY',
   );
+  static String _nativeGoogleMapsApiKey = '';
+
+  static String get googleMapsWebServiceApiKey =>
+      _googleMapsWebServiceApiKey.isNotEmpty
+      ? _googleMapsWebServiceApiKey
+      : _nativeGoogleMapsApiKey;
+
+  static void configureNativeGoogleMapsApiKey(String? value) {
+    _nativeGoogleMapsApiKey = value?.trim() ?? '';
+  }
 
   static const geminiApiKey = String.fromEnvironment('GEMINI_API_KEY');
 

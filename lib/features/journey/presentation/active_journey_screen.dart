@@ -12,6 +12,7 @@ import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
 import '../../../app/config/app_config.dart';
+import '../../../app/integrations/native_map_configuration.dart';
 import '../../auth/data/auth_repository.dart';
 import '../../companion/domain/companion_models.dart';
 import '../../companion/application/response_priority_service.dart';
@@ -536,12 +537,12 @@ class _ActiveJourneyScreenState extends ConsumerState<ActiveJourneyScreen> {
       case CompanionAction.conversationalReply:
         return respond(
           command.message ??
-              'I’m here with you. Ask about this journey or tell me what you need.',
+              'I’m listening. Tell me a little more so I can follow you.',
         );
       case CompanionAction.unknown:
         return respond(
           command.message ??
-              'I didn’t understand that. You can ask naturally, repeat guidance, change the route, or open Journey Lens.',
+              'I didn’t quite follow that. Say it another way and I’ll stay with you.',
         );
     }
   }
@@ -663,6 +664,7 @@ class _ActiveJourneyScreenState extends ConsumerState<ActiveJourneyScreen> {
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(journeySessionControllerProvider);
+    final nativeMapAvailable = ref.watch(nativeMapAvailableProvider);
     final route = session.selectedRoute;
     if (route == null || session.destination == null) {
       return _NoActiveJourney(onPlan: () => context.go('/plan'));
@@ -711,6 +713,7 @@ class _ActiveJourneyScreenState extends ConsumerState<ActiveJourneyScreen> {
               )
             : _MobilityJourneySurface(
                 key: const ValueKey('journey-map'),
+                mapAvailable: nativeMapAvailable,
                 route: route,
                 destinationName: session.destination!.name,
                 destination: session.destination!.location,
@@ -739,6 +742,7 @@ class _ActiveJourneyScreenState extends ConsumerState<ActiveJourneyScreen> {
 class _MobilityJourneySurface extends StatelessWidget {
   const _MobilityJourneySurface({
     super.key,
+    required this.mapAvailable,
     required this.route,
     required this.destinationName,
     required this.destination,
@@ -758,6 +762,7 @@ class _MobilityJourneySurface extends StatelessWidget {
     required this.onMenuAction,
   });
 
+  final bool mapAvailable;
   final JourneyRouteOption route;
   final String destinationName;
   final LatLng destination;
@@ -789,38 +794,41 @@ class _MobilityJourneySurface extends StatelessWidget {
     return Stack(
       fit: StackFit.expand,
       children: [
-        GoogleMap(
-          initialCameraPosition: CameraPosition(
-            target: current,
-            zoom: 17,
-            tilt: 35,
-          ),
-          padding: const EdgeInsets.only(top: 210, bottom: 190),
-          cameraTargetBounds: CameraTargetBounds(AccraOperatingArea.bounds),
-          minMaxZoomPreference: const MinMaxZoomPreference(10, 20),
-          myLocationEnabled: position != null,
-          myLocationButtonEnabled: false,
-          compassEnabled: true,
-          mapToolbarEnabled: false,
-          zoomControlsEnabled: false,
-          trafficEnabled: route.mode == JourneyTravelMode.driving,
-          markers: {
-            Marker(
-              markerId: const MarkerId('destination'),
-              position: destination,
-              infoWindow: InfoWindow(title: destinationName),
+        if (mapAvailable)
+          GoogleMap(
+            initialCameraPosition: CameraPosition(
+              target: current,
+              zoom: 17,
+              tilt: 35,
             ),
-          },
-          polylines: {
-            Polyline(
-              polylineId: const PolylineId('active-route'),
-              points: route.path,
-              color: Theme.of(context).colorScheme.primary,
-              width: 8,
-            ),
-          },
-          onMapCreated: onMapCreated,
-        ),
+            padding: const EdgeInsets.only(top: 210, bottom: 190),
+            cameraTargetBounds: CameraTargetBounds(AccraOperatingArea.bounds),
+            minMaxZoomPreference: const MinMaxZoomPreference(10, 20),
+            myLocationEnabled: position != null,
+            myLocationButtonEnabled: false,
+            compassEnabled: true,
+            mapToolbarEnabled: false,
+            zoomControlsEnabled: false,
+            trafficEnabled: route.mode == JourneyTravelMode.driving,
+            markers: {
+              Marker(
+                markerId: const MarkerId('destination'),
+                position: destination,
+                infoWindow: InfoWindow(title: destinationName),
+              ),
+            },
+            polylines: {
+              Polyline(
+                polylineId: const PolylineId('active-route'),
+                points: route.path,
+                color: Theme.of(context).colorScheme.primary,
+                width: 8,
+              ),
+            },
+            onMapCreated: onMapCreated,
+          )
+        else
+          _UnavailableMapJourneyBackdrop(destinationName: destinationName),
         const _MapScrim(),
         SafeArea(
           child: _JourneyOverlayControls(
@@ -955,6 +963,62 @@ class _JourneyOverlayControls extends StatelessWidget {
           const SizedBox(height: 8),
           capsule,
         ],
+      ),
+    );
+  }
+}
+
+class _UnavailableMapJourneyBackdrop extends StatelessWidget {
+  const _UnavailableMapJourneyBackdrop({required this.destinationName});
+
+  final String destinationName;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Semantics(
+      container: true,
+      label:
+          'Visual map unavailable. Guidance to $destinationName continues with text and speech.',
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              scheme.primary.withValues(alpha: 0.72),
+              const Color(0xFF102C34),
+              Colors.black,
+            ],
+          ),
+        ),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.route_rounded, color: Colors.white, size: 48),
+                const SizedBox(height: 12),
+                Text(
+                  'Guidance is still active',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleLarge?.copyWith(color: Colors.white),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  'The visual map isn’t available in this build. Follow the verified steps and spoken directions.',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Colors.white.withValues(alpha: 0.82),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

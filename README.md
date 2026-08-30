@@ -24,10 +24,16 @@ flutter run
 
 Do not commit service keys. Use a platform-restricted Maps rendering key:
 
-- Android: provide `GOOGLE_MAPS_API_KEY` as a Gradle property or environment
-  variable.
+- Android: add `GOOGLE_MAPS_API_KEY` to ignored `android/local.properties`,
+  or provide it as a Gradle property or environment variable.
 - iOS: copy `ios/Flutter/Secrets.xcconfig.example` to
   `ios/Flutter/Secrets.xcconfig` and add an iOS app-restricted key.
+
+The app can reuse the native platform key for prototype Places and Routes REST
+requests, so local runs only need the Gemini Dart define. A
+`GOOGLE_MAPS_WEB_SERVICE_API_KEY` Dart define still takes precedence when
+provided. Before distribution, move REST traffic behind the companion backend
+and use a distinct restricted Maps SDK key for each native platform.
 
 Production Places, Routes, and Gemini traffic uses `COMPANION_BACKEND_URL` and
 sends the signed-in Firebase ID token as a bearer token. The expected backend

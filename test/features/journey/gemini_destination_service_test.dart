@@ -1,3 +1,4 @@
+import 'package:ai_mobility_assistant/features/companion/domain/companion_models.dart';
 import 'package:ai_mobility_assistant/features/journey/data/gemini_destination_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -43,10 +44,51 @@ void main() {
     );
   });
 
-  test('ordinary conversation is not misread as a destination', () async {
+  test('ordinary conversation gets a natural reply', () async {
     final command = await service.interpret('How are you today?');
 
     expect(command.action, CompanionAction.conversationalReply);
+    expect(command.message, 'I’m good—thanks for asking. How are you doing?');
+  });
+
+  test('a broad Accra outing request starts a useful conversation', () async {
+    final command = await service.interpret(
+      'Can you suggest me somewhere to go out and have fun',
+    );
+
+    expect(command.action, CompanionAction.conversationalReply);
+    expect(command.needsClarification, isTrue);
+    expect(command.message, contains('What kind of outing'));
+    expect(command.message, isNot(contains('Accra')));
+  });
+
+  test('an outing follow-up searches the chosen category', () async {
+    final command = await service.interpret(
+      'Live music',
+      context: CompanionContext(
+        recentTurns: [
+          AssistantTurn(
+            id: '1',
+            speaker: AssistantSpeaker.companion,
+            text:
+                'Absolutely. What kind of outing sounds good—live music, a beach, food, art, or somewhere relaxed?',
+            createdAt: DateTime(2026),
+          ),
+        ],
+      ),
+    );
+
+    expect(command.action, CompanionAction.searchPlaces);
+    expect(command.query, 'live music');
+  });
+
+  test('a specific leisure suggestion searches trusted places', () async {
+    final command = await service.interpret(
+      'Can you recommend somewhere with live music?',
+    );
+
+    expect(command.action, CompanionAction.searchPlaces);
+    expect(command.query, 'live music');
   });
 
   test('offline interpreter understands an Accra trotro request', () async {

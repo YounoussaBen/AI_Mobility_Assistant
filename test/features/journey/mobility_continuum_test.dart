@@ -1,4 +1,5 @@
 import 'package:ai_mobility_assistant/app/theme/app_theme.dart';
+import 'package:ai_mobility_assistant/app/integrations/native_map_configuration.dart';
 import 'package:ai_mobility_assistant/features/auth/data/auth_repository.dart';
 import 'package:ai_mobility_assistant/features/journey/application/journey_session_controller.dart';
 import 'package:ai_mobility_assistant/features/journey/domain/accra_operating_area.dart';
@@ -94,11 +95,37 @@ void main() {
     expect(find.byKey(const Key('journey_companion_capsule')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('active guidance does not construct an unavailable native map', (
+    tester,
+  ) async {
+    final container = _activeJourneyContainer(mapAvailable: false);
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          theme: AppTheme.light,
+          home: const ActiveJourneyScreen(),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(GoogleMap), findsNothing);
+    expect(find.text('Guidance is still active'), findsOneWidget);
+    expect(find.text('Test destination'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }
 
-ProviderContainer _activeJourneyContainer() {
+ProviderContainer _activeJourneyContainer({bool mapAvailable = true}) {
   final container = ProviderContainer(
-    overrides: [authRepositoryProvider.overrideWithValue(_JourneyTestAuth())],
+    overrides: [
+      authRepositoryProvider.overrideWithValue(_JourneyTestAuth()),
+      nativeMapAvailableProvider.overrideWithValue(mapAvailable),
+    ],
   );
   final controller = container.read(journeySessionControllerProvider.notifier);
   const destination = JourneyPlace(

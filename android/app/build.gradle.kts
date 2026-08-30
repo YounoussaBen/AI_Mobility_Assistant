@@ -1,3 +1,12 @@
+import java.util.Properties
+
+val localProperties = Properties().apply {
+    val localPropertiesFile = rootProject.file("local.properties")
+    if (localPropertiesFile.exists()) {
+        localPropertiesFile.inputStream().use(::load)
+    }
+}
+
 plugins {
     id("com.android.application")
     // START: FlutterFire Configuration
@@ -34,7 +43,7 @@ android {
         manifestPlaceholders["googleMapsApiKey"] =
             providers.gradleProperty("GOOGLE_MAPS_API_KEY")
                 .orElse(providers.environmentVariable("GOOGLE_MAPS_API_KEY"))
-                .getOrElse("")
+                .getOrElse(localProperties.getProperty("GOOGLE_MAPS_API_KEY").orEmpty())
     }
 
     buildTypes {

@@ -11,6 +11,7 @@ import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
 import '../../../app/config/app_config.dart';
+import '../../../app/integrations/native_map_configuration.dart';
 import '../../auth/data/auth_repository.dart';
 import '../../companion/domain/companion_models.dart';
 import '../../companion/application/response_priority_service.dart';
@@ -665,6 +666,7 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
   @override
   Widget build(BuildContext context) {
     final savedPlaces = ref.watch(savedPlacesControllerProvider);
+    final nativeMapAvailable = ref.watch(nativeMapAvailableProvider);
     final phase = _listening
         ? CompanionPhase.listening
         : _understandingSpeech
@@ -814,7 +816,7 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
                         OutlinedButton.icon(
                           onPressed: () {
                             setState(() => _showMap = !_showMap);
-                            if (_showMap) {
+                            if (_showMap && nativeMapAvailable) {
                               WidgetsBinding.instance.addPostFrameCallback(
                                 (_) => _fitMap(),
                               );
@@ -823,15 +825,22 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
                           icon: Icon(
                             _showMap
                                 ? Icons.visibility_off_outlined
-                                : Icons.map_outlined,
+                                : nativeMapAvailable
+                                ? Icons.map_outlined
+                                : Icons.info_outline_rounded,
                           ),
                           label: Text(
-                            _showMap ? 'Hide map' : 'Show map preview',
+                            _showMap
+                                ? 'Hide map'
+                                : nativeMapAvailable
+                                ? 'Show map preview'
+                                : 'Map preview unavailable',
                           ),
                         ),
                         if (_showMap) ...[
                           const SizedBox(height: 12),
                           _MapPreview(
+                            mapAvailable: nativeMapAvailable,
                             origin: _origin,
                             destination: _destination,
                             routes: [
@@ -1618,6 +1627,7 @@ class _MetricChip extends StatelessWidget {
 
 class _MapPreview extends StatelessWidget {
   const _MapPreview({
+    required this.mapAvailable,
     required this.origin,
     required this.destination,
     required this.routes,
@@ -1625,6 +1635,7 @@ class _MapPreview extends StatelessWidget {
     required this.onCreated,
   });
 
+  final bool mapAvailable;
   final LatLng? origin;
   final JourneyPlace? destination;
   final List<JourneyRouteOption> routes;
@@ -1634,6 +1645,53 @@ class _MapPreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    if (!mapAvailable) {
+      return Semantics(
+        container: true,
+        label:
+            'Visual map unavailable. Route choices remain available as text and speech.',
+        child: Container(
+          height: 220,
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: scheme.outlineVariant),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  color: scheme.primaryContainer,
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  Icons.map_outlined,
+                  color: scheme.onPrimaryContainer,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                'Visual map isn’t available in this build',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'You can still compare route details, hear the journey, and start guidance.',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     return Semantics(
       label:
           'Optional visual route map. Route details are also available as text and speech.',

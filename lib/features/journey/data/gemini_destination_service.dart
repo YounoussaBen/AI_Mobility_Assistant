@@ -65,8 +65,9 @@ class CompanionContext {
   ].whereType<String>().join('|').toLowerCase();
 
   String get modelSummary {
-    return 'Deployment context: Accra, Ghana only; Ghanaian English. '
-        'Verified app context: destination=${destination ?? 'none'}; '
+    return 'Internal operating scope (do not repeat unless coverage is relevant): '
+        '${AccraOperatingArea.name}; language=${AccraOperatingArea.languageCode}. '
+        'Verified journey context: destination=${destination ?? 'none'}; '
         'selectedRoute=${selectedRoute ?? 'none'}; '
         'routeChoices=${routeChoices.isEmpty ? 'none' : routeChoices.join(' / ')}; '
         'savedPlaces=${savedPlaces.isEmpty ? 'none' : savedPlaces.join(' / ')}; '
@@ -155,7 +156,7 @@ class GeminiDestinationService {
     String transcript,
     CompanionContext context,
   ) async {
-    final fallback = _fallbackCommand(transcript);
+    final fallback = _fallbackCommand(transcript, context);
     final backend = _backendDio;
     if (backend != null) {
       try {
@@ -172,6 +173,13 @@ class GeminiDestinationService {
     if (!isConfigured) return fallback;
 
     try {
+      final recentTurns = context.recentTurns.takeLast(12).toList();
+      if (recentTurns.isNotEmpty &&
+          recentTurns.last.speaker == AssistantSpeaker.user &&
+          recentTurns.last.text.trim().toLowerCase() ==
+              transcript.trim().toLowerCase()) {
+        recentTurns.removeLast();
+      }
       final response = await _dio.post<Map<String, dynamic>>(
         '/v1beta/models/$_model:generateContent',
         data: {
@@ -180,8 +188,13 @@ class GeminiDestinationService {
               {
                 'text':
                     'You interpret short commands for a mobility companion. '
-                    'This deployment serves Accra, Ghana only. Understand '
-                    'Ghanaian English and Accra travel language such as trotro, '
+                    'Silently constrain place searches and journey actions to '
+                    'Accra, Ghana. This is an internal operating rule, not a '
+                    'conversation topic. Do not mention Accra, Ghana, the pilot, '
+                    'or coverage in ordinary replies. Mention the boundary only '
+                    'when the user asks about coverage or clearly requests a '
+                    'destination outside it. Understand Ghanaian English and '
+                    'local travel language such as trotro, '
                     'shared taxi, station, lorry station, junction, Circle, 37, '
                     'Madina, Osu, Kaneshie, and Accra Mall. Preserve useful '
                     'local landmark and neighbourhood words in place queries. '
@@ -194,13 +207,19 @@ class GeminiDestinationService {
                     'can present choices. Use the verified context to resolve '
                     'follow-ups such as “why”, “another one”, “cheaper”, and '
                     '“the bus is delayed”. Never describe simulated transport '
-                    'as live and never claim an action was executed.',
+                    'as live and never claim an action was executed. For normal '
+                    'conversation, use reply and sound like a warm, concise human '
+                    'travel companion: answer the person directly before offering '
+                    'a next step. Never recite a list of app capabilities. For a '
+                    'broad outing request, ask one natural follow-up with a few '
+                    'relevant categories instead of giving a generic '
+                    'command prompt.',
               },
               {'text': context.modelSummary},
             ],
           },
           'contents': [
-            for (final turn in context.recentTurns.takeLast(12))
+            for (final turn in recentTurns)
               {
                 'role': turn.speaker == AssistantSpeaker.user
                     ? 'user'
@@ -365,7 +384,7 @@ class GeminiDestinationService {
           'toolConfig': {
             'functionCallingConfig': {'mode': 'ANY'},
           },
-          'generationConfig': {'temperature': 0.0, 'maxOutputTokens': 120},
+          'generationConfig': {'temperature': 0.35, 'maxOutputTokens': 200},
         },
         options: Options(headers: {'x-goog-api-key': _apiKey}),
       );
@@ -444,10 +463,13 @@ class GeminiDestinationService {
       'end_journey' => const CompanionCommand(
         action: CompanionAction.endJourney,
       ),
-      'reply' => CompanionCommand(
-        action: CompanionAction.conversationalReply,
-        message: (args['message'] as String?)?.trim(),
-      ),
+      'reply' => switch ((args['message'] as String?)?.trim()) {
+        final message? when message.isNotEmpty => CompanionCommand(
+          action: CompanionAction.conversationalReply,
+          message: message,
+        ),
+        _ => fallback,
+      },
       _ => fallback,
     };
   }
@@ -476,11 +498,16 @@ class GeminiDestinationService {
       _ => CompanionAction.unknown,
     };
     if (action == CompanionAction.unknown) return fallback;
+    final message = (data['message'] as String?)?.trim();
+    if (action == CompanionAction.conversationalReply &&
+        (message == null || message.isEmpty)) {
+      return fallback;
+    }
     return CompanionCommand(
       action: action,
       query: (data['query'] as String?)?.trim(),
       needsClarification: data['needsClarification'] as bool? ?? false,
-      message: data['message'] as String?,
+      message: message,
     );
   }
 
@@ -490,7 +517,10 @@ class GeminiDestinationService {
     return Options(headers: {'Authorization': 'Bearer $token'});
   }
 
-  CompanionCommand _fallbackCommand(String transcript) {
+  CompanionCommand _fallbackCommand(
+    String transcript,
+    CompanionContext context,
+  ) {
     final normalized = transcript.trim().toLowerCase();
     if (RegExp(
       r"what('s| is)? ahead|look ahead|scan ahead",
@@ -540,11 +570,82 @@ class GeminiDestinationService {
     if (RegExp(r'save (this|the) (place|destination)').hasMatch(normalized)) {
       return const CompanionCommand(action: CompanionAction.saveDestination);
     }
-    if (RegExp(r'saved places|show.*places').hasMatch(normalized)) {
+    if (RegExp(
+      r'saved places|show.*saved (places|destinations)|what.*saved',
+    ).hasMatch(normalized)) {
       return const CompanionCommand(action: CompanionAction.listSavedPlaces);
     }
     if (RegExp(r'end (the )?journey|stop navigation').hasMatch(normalized)) {
       return const CompanionCommand(action: CompanionAction.endJourney);
+    }
+
+    final lastCompanionTurn = context.recentTurns
+        .takeLast(6)
+        .where((turn) => turn.speaker == AssistantSpeaker.companion)
+        .lastOrNull
+        ?.text
+        .toLowerCase();
+    final isOutingFollowUp =
+        lastCompanionTurn?.contains('what kind of outing') == true;
+    final discoveryQuery = _discoveryQuery(normalized);
+    if (isOutingFollowUp && discoveryQuery != null) {
+      return CompanionCommand(
+        action: CompanionAction.searchPlaces,
+        query: discoveryQuery,
+      );
+    }
+    final asksForDiscovery = RegExp(
+      r'\b(suggest|recommend|find|show|where can|where should|somewhere|'
+      r'in the mood|feel like|want to)\b',
+    ).hasMatch(normalized);
+    if (asksForDiscovery && discoveryQuery != null) {
+      return CompanionCommand(
+        action: CompanionAction.searchPlaces,
+        query: discoveryQuery,
+      );
+    }
+
+    if (RegExp(
+      r'\b(suggest|recommend|where can|where should|somewhere|place)\b.*'
+      r'\b(fun|go out|outing|hang out|chill|date)\b|'
+      r'\b(go out|have fun|hang out)\b',
+    ).hasMatch(normalized)) {
+      return const CompanionCommand(
+        action: CompanionAction.conversationalReply,
+        needsClarification: true,
+        message:
+            'Absolutely. What kind of outing sounds good—live music, a beach, food, art, or somewhere relaxed?',
+      );
+    }
+
+    if (RegExp(
+      r'^(hi|hello|hey|good morning|good afternoon|good evening)[!. ]*$',
+    ).hasMatch(normalized)) {
+      return const CompanionCommand(
+        action: CompanionAction.conversationalReply,
+        message: 'Hi! How are you doing, and what’s on your mind?',
+      );
+    }
+    if (RegExp(r'\bhow are you\b').hasMatch(normalized)) {
+      return const CompanionCommand(
+        action: CompanionAction.conversationalReply,
+        message: 'I’m good—thanks for asking. How are you doing?',
+      );
+    }
+    if (RegExp(
+      r'^(thanks|thank you|nice|great|perfect)[!. ]*$',
+    ).hasMatch(normalized)) {
+      return const CompanionCommand(
+        action: CompanionAction.conversationalReply,
+        message: 'You’re welcome. What else are you thinking about?',
+      );
+    }
+    if (RegExp(r'\b(who are you|what are you)\b').hasMatch(normalized)) {
+      return const CompanionCommand(
+        action: CompanionAction.conversationalReply,
+        message:
+            'I’m Mobility AI, your travel companion. You can speak to me normally, and I’ll ask when I need one more detail.',
+      );
     }
     final localTransitTrip = RegExp(
       r'^(?:please\s+)?(?:i\s+(?:need|want)\s+to\s+)?(?:take|catch|board|get)\s+'
@@ -572,9 +673,35 @@ class GeminiDestinationService {
     }
     return const CompanionCommand(
       action: CompanionAction.conversationalReply,
-      message:
-          'I’m here with your Accra journey context. Ask me to plan, compare, explain, save, repeat, pause, or adapt a route.',
+      needsClarification: true,
+      message: 'I’m listening. Tell me a little more so I can follow you.',
     );
+  }
+
+  String? _discoveryQuery(String normalized) {
+    if (normalized.contains('live music')) return 'live music';
+    if (RegExp(r'\b(beach|seaside)\b').hasMatch(normalized)) return 'beach';
+    if (RegExp(
+      r'\b(food|eat|restaurant|dinner|lunch)\b',
+    ).hasMatch(normalized)) {
+      return 'restaurants';
+    }
+    if (RegExp(r'\b(art|gallery|museum)\b').hasMatch(normalized)) {
+      return 'art galleries and museums';
+    }
+    if (RegExp(r'\b(relax|quiet|chill|park)\b').hasMatch(normalized)) {
+      return 'relaxing places and parks';
+    }
+    if (RegExp(r'\b(nightlife|club|dance)\b').hasMatch(normalized)) {
+      return 'nightlife';
+    }
+    if (RegExp(r'\b(games|cinema|movie)\b').hasMatch(normalized)) {
+      return 'games and cinemas';
+    }
+    if (RegExp(r'\b(surprise me|anything|you choose)\b').hasMatch(normalized)) {
+      return 'popular leisure and entertainment';
+    }
+    return null;
   }
 
   String _stripTravelWords(String transcript) {
