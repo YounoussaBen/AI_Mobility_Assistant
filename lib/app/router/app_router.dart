@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -12,10 +14,15 @@ import '../../features/home/presentation/profile_screen.dart';
 import '../../features/home/presentation/safety_privacy_screen.dart';
 import '../../features/home/presentation/settings_screen.dart';
 import '../../features/home/presentation/travel_history_screen.dart';
+import '../../features/home/presentation/support_screen.dart';
+import '../../features/saved_places/presentation/saved_places_screen.dart';
 import '../../features/auth/presentation/auth_screen.dart';
 import '../../features/onboarding/presentation/onboarding_screen.dart';
 import '../../features/preferences/presentation/mobility_preferences_screen.dart';
 import '../../features/splash/presentation/splash_screen.dart';
+import '../../features/companion/domain/companion_models.dart';
+import '../../features/journey/application/journey_session_controller.dart';
+import '../integrations/system_shortcut_service.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
   final router = GoRouter(
@@ -51,8 +58,12 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/home',
-        pageBuilder: (context, state) =>
-            _appPage(state: state, child: const HomeScreen()),
+        pageBuilder: (context, state) => _appPage(
+          state: state,
+          child: HomeScreen(
+            startWithVoice: state.uri.queryParameters['voice'] == 'true',
+          ),
+        ),
       ),
       GoRoute(
         path: '/plan',
@@ -61,6 +72,10 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           child: JourneyPlannerScreen(
             startWithVoice: state.uri.queryParameters['voice'] == 'true',
             initialPrompt: state.uri.queryParameters['prompt'],
+            resumeDestination:
+                state.uri.queryParameters['resumeDestination'] == 'true',
+            reroute: state.uri.queryParameters['reroute'] == 'true',
+            transportOnly: state.uri.queryParameters['transport'] == 'true',
           ),
         ),
       ),
@@ -100,6 +115,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             _appPage(state: state, child: const TravelHistoryScreen()),
       ),
       GoRoute(
+        path: '/saved-places',
+        pageBuilder: (context, state) =>
+            _appPage(state: state, child: const SavedPlacesScreen()),
+      ),
+      GoRoute(
+        path: '/support',
+        pageBuilder: (context, state) =>
+            _appPage(state: state, child: const SupportScreen()),
+      ),
+      GoRoute(
         path: '/safety-privacy',
         pageBuilder: (context, state) =>
             _appPage(state: state, child: const SafetyPrivacyScreen()),
@@ -107,6 +132,28 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     ],
   );
 
+  final shortcuts = ref.watch(systemShortcutServiceProvider);
+  final shortcutSubscription = shortcuts.actions.listen((action) {
+    final session = ref.read(journeySessionControllerProvider);
+    switch (action) {
+      case SystemShortcutAction.talk:
+        router.go('/home?voice=true');
+      case SystemShortcutAction.guidance:
+        router.go(session.hasActiveJourney ? '/guidance' : '/home');
+      case SystemShortcutAction.lens:
+        if (session.hasActiveJourney) {
+          ref
+              .read(journeySessionControllerProvider.notifier)
+              .setGuidanceView(GuidanceView.lookAhead);
+          router.go('/guidance');
+        } else {
+          router.go('/look-ahead');
+        }
+    }
+  });
+  unawaited(shortcuts.initialize());
+
+  ref.onDispose(shortcutSubscription.cancel);
   ref.onDispose(router.dispose);
   return router;
 });

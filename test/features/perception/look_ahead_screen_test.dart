@@ -4,15 +4,17 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('Look Ahead opens with a concise camera handoff', (tester) async {
+  testWidgets('Look Ahead opens as a privacy-first Journey Lens', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       const ProviderScope(child: MaterialApp(home: LookAheadScreen())),
     );
 
-    expect(find.text('Point your phone forward'), findsOneWidget);
-    expect(find.text('Start camera'), findsOneWidget);
-    expect(find.text('An intentional camera check'), findsNothing);
-    expect(find.text('Conditions matter'), findsNothing);
+    expect(find.text('Journey Lens'), findsOneWidget);
+    expect(find.text('Start Journey Lens'), findsOneWidget);
+    expect(find.textContaining('not recorded'), findsOneWidget);
+    expect(find.textContaining('whether a path is safe'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

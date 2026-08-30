@@ -23,4 +23,36 @@ void main() {
       expect(command.query, isNull);
     },
   );
+
+  test('offline interpreter resolves contextual companion tools', () async {
+    expect(
+      (await service.interpret('Why is this route recommended?')).action,
+      CompanionAction.explainRecommendation,
+    );
+    expect(
+      (await service.interpret('The bus is delayed, what should I do?')).action,
+      CompanionAction.reportDelay,
+    );
+    expect(
+      (await service.interpret('Give me a cheaper option')).action,
+      CompanionAction.cheaperRoute,
+    );
+    expect(
+      (await service.interpret('Use a route with fewer transfers')).action,
+      CompanionAction.fewerTransfers,
+    );
+  });
+
+  test('ordinary conversation is not misread as a destination', () async {
+    final command = await service.interpret('How are you today?');
+
+    expect(command.action, CompanionAction.conversationalReply);
+  });
+
+  test('offline interpreter understands an Accra trotro request', () async {
+    final command = await service.interpret('Catch a trotro to Madina station');
+
+    expect(command.action, CompanionAction.searchPlaces);
+    expect(command.query, 'Madina station');
+  });
 }

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app/app.dart';
+import 'app/storage/app_storage.dart';
 import 'features/preferences/data/mobility_preferences_repository.dart';
 import 'features/voice/data/voice_preferences_repository.dart';
 import 'firebase_options.dart';
@@ -18,6 +19,9 @@ Future<void> main() async {
   runApp(
     ProviderScope(
       overrides: [
+        appStorageProvider.overrideWithValue(
+          SharedPreferencesAppStorage(sharedPreferences),
+        ),
         mobilityPreferencesRepositoryProvider.overrideWithValue(
           MobilityPreferencesRepository(sharedPreferences),
         ),

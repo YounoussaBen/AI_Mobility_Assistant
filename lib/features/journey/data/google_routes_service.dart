@@ -1,17 +1,21 @@
 import 'package:dio/dio.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
+import '../domain/accra_operating_area.dart';
 import '../domain/route_option.dart';
+import 'route_cache_repository.dart';
 
 class GoogleRoutesService {
   GoogleRoutesService({
     required String apiKey,
     String backendUrl = '',
     Future<String?> Function()? accessToken,
+    RouteCacheRepository? cacheRepository,
     Dio? dio,
   }) : _apiKey = apiKey,
        _usesBackend = backendUrl.isNotEmpty,
        _accessToken = accessToken,
+       _cacheRepository = cacheRepository,
        _dio =
            dio ??
            Dio(
@@ -25,25 +29,59 @@ class GoogleRoutesService {
   final String _apiKey;
   final bool _usesBackend;
   final Future<String?> Function()? _accessToken;
+  final RouteCacheRepository? _cacheRepository;
   final Dio _dio;
+
+  static const _googleModes = [
+    JourneyTravelMode.walking,
+    JourneyTravelMode.transit,
+    JourneyTravelMode.driving,
+    JourneyTravelMode.bicycling,
+    JourneyTravelMode.twoWheeled,
+  ];
 
   Future<List<JourneyRouteOption>> routes({
     required LatLng origin,
     required LatLng destination,
   }) async {
+    if (!AccraOperatingArea.contains(origin) ||
+        !AccraOperatingArea.contains(destination)) {
+      throw const OutsideAccraOperatingArea(
+        'Routes are available only when both points are inside the Accra pilot area.',
+      );
+    }
     final results = await Future.wait(
-      JourneyTravelMode.values.map(
-        (mode) => _routeForMode(
+      _googleModes.map(
+        (mode) => _routesForMode(
           origin: origin,
           destination: destination,
           mode: mode,
-        ).catchError((_) => null),
+        ).catchError((_) => const <JourneyRouteOption>[]),
       ),
     );
-    return results.whereType<JourneyRouteOption>().toList(growable: false);
+    final routes = results
+        .expand((items) => items)
+        .where(
+          (route) =>
+              route.path.isNotEmpty &&
+              AccraOperatingArea.containsRoute(route.path),
+        )
+        .toList(growable: false);
+    if (routes.isNotEmpty) {
+      await _cacheRepository?.save(origin, destination, routes);
+      return routes;
+    }
+    final cached = _cacheRepository?.load(origin, destination) ?? const [];
+    return cached
+        .where(
+          (route) =>
+              route.path.isNotEmpty &&
+              AccraOperatingArea.containsRoute(route.path),
+        )
+        .toList(growable: false);
   }
 
-  Future<JourneyRouteOption?> _routeForMode({
+  Future<List<JourneyRouteOption>> _routesForMode({
     required LatLng origin,
     required LatLng destination,
     required JourneyTravelMode mode,
@@ -56,8 +94,8 @@ class GoogleRoutesService {
         'travelMode': mode.apiValue,
         if (mode == JourneyTravelMode.driving)
           'routingPreference': 'TRAFFIC_AWARE',
-        'computeAlternativeRoutes': false,
-        'languageCode': 'en-US',
+        'computeAlternativeRoutes': true,
+        'languageCode': AccraOperatingArea.languageCode,
         'units': 'METRIC',
       },
       options: _usesBackend
@@ -79,8 +117,21 @@ class GoogleRoutesService {
     );
 
     final routes = response.data?['routes'] as List<dynamic>? ?? [];
-    if (routes.isEmpty) return null;
-    final route = routes.first as Map<String, dynamic>;
+    if (routes.isEmpty) return const [];
+    final parsed = <JourneyRouteOption>[];
+    for (var index = 0; index < routes.length; index++) {
+      final route = routes[index] as Map<String, dynamic>;
+      final option = _parseRoute(route, mode: mode, alternativeIndex: index);
+      if (option != null) parsed.add(option);
+    }
+    return parsed;
+  }
+
+  JourneyRouteOption? _parseRoute(
+    Map<String, dynamic> route, {
+    required JourneyTravelMode mode,
+    required int alternativeIndex,
+  }) {
     final encoded =
         (route['polyline'] as Map<String, dynamic>?)?['encodedPolyline']
             as String?;
@@ -106,6 +157,15 @@ class GoogleRoutesService {
       transfers: mode == JourneyTravelMode.transit
           ? (transitSteps - 1).clamp(0, 99)
           : 0,
+      providerRouteId:
+          'google-${mode.name}-$alternativeIndex-${encoded.hashCode}',
+      routeLabel: alternativeIndex == 0
+          ? null
+          : '${mode.label} alternative ${alternativeIndex + 1}',
+      providerName: 'Google Routes',
+      source: JourneyEvidenceSource.live,
+      availability: RouteAvailability.available,
+      lastUpdated: DateTime.now(),
     );
   }
 
@@ -158,6 +218,8 @@ class GoogleRoutesService {
       'WALK' => JourneyTravelMode.walking,
       'TRANSIT' => JourneyTravelMode.transit,
       'DRIVE' => JourneyTravelMode.driving,
+      'BICYCLE' => JourneyTravelMode.bicycling,
+      'TWO_WHEELER' => JourneyTravelMode.twoWheeled,
       _ => fallback,
     };
   }

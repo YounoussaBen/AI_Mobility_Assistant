@@ -58,6 +58,30 @@ class AssistantTurn {
   final String text;
   final DateTime createdAt;
   final bool isToolStatus;
+
+  Map<String, Object> toJson() => {
+    'id': id,
+    'speaker': speaker.name,
+    'text': text,
+    'createdAt': createdAt.toIso8601String(),
+    'isToolStatus': isToolStatus,
+  };
+
+  factory AssistantTurn.fromJson(Map<String, dynamic> json) {
+    final speakerName = json['speaker'] as String?;
+    final speakers = AssistantSpeaker.values.where(
+      (speaker) => speaker.name == speakerName,
+    );
+    return AssistantTurn(
+      id: json['id'] as String? ?? '',
+      speaker: speakers.isEmpty ? AssistantSpeaker.system : speakers.first,
+      text: json['text'] as String? ?? '',
+      createdAt:
+          DateTime.tryParse(json['createdAt'] as String? ?? '') ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+      isToolStatus: json['isToolStatus'] as bool? ?? false,
+    );
+  }
 }
 
 enum GuidanceView { guide, map, lookAhead }

@@ -27,15 +27,52 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Mobility AI uses your location to show your starting point and plan accessible journeys.</string>
+	<string>Mobility AI uses your location to show your starting point and plan accessible journeys within the Accra pilot area.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>During an active journey, Mobility AI uses location in the background to continue guidance and detect when a route may need updating.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>During an active journey, Mobility AI uses location in the background to continue guidance and detect when a route may need updating.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Mobility AI uses the microphone only when you choose push-to-talk for a journey or companion command.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Mobility AI converts a short spoken command into text so the companion can respond.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Mobility AI uses the camera only when you start Look Ahead, processing frames on this device without storing them.</string>
+	<string>Mobility AI uses the camera only when you start Journey Lens, processing frames on this device without recording or storing them.</string>
 	<key>GoogleMapsAPIKey</key>
 	<string>$(GOOGLE_MAPS_API_KEY)</string>
+		<key>UIApplicationShortcutItems</key>
+		<array>
+			<dict>
+				<key>UIApplicationShortcutItemIconType</key>
+				<string>UIApplicationShortcutIconTypeAudio</string>
+				<key>UIApplicationShortcutItemSubtitle</key>
+				<string>Start a voice conversation</string>
+				<key>UIApplicationShortcutItemTitle</key>
+				<string>Talk to Mobility AI</string>
+				<key>UIApplicationShortcutItemType</key>
+				<string>ai.mobility.talk</string>
+			</dict>
+			<dict>
+				<key>UIApplicationShortcutItemIconType</key>
+				<string>UIApplicationShortcutIconTypeLocation</string>
+				<key>UIApplicationShortcutItemSubtitle</key>
+				<string>Return to the active journey</string>
+				<key>UIApplicationShortcutItemTitle</key>
+				<string>Resume guidance</string>
+				<key>UIApplicationShortcutItemType</key>
+				<string>ai.mobility.guidance</string>
+			</dict>
+			<dict>
+				<key>UIApplicationShortcutItemIconType</key>
+				<string>UIApplicationShortcutIconTypeCapturePhoto</string>
+				<key>UIApplicationShortcutItemSubtitle</key>
+				<string>Open on-device camera awareness</string>
+				<key>UIApplicationShortcutItemTitle</key>
+				<string>Journey Lens</string>
+				<key>UIApplicationShortcutItemType</key>
+				<string>ai.mobility.lens</string>
+			</dict>
+		</array>
 		<key>UIApplicationSceneManifest</key>
 		<dict>
 			<key>UIApplicationSupportsMultipleScenes</key>
@@ -59,6 +96,10 @@
 		</dict>
 		<key>UIApplicationSupportsIndirectInputEvents</key>
 		<true/>
+		<key>UIBackgroundModes</key>
+		<array>
+			<string>location</string>
+		</array>
 		<key>UILaunchStoryboardName</key>
 		<string>LaunchScreen</string>
 		<key>UIMainStoryboardFile</key>

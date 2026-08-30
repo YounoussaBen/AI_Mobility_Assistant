@@ -7,12 +7,6 @@ import '../../auth/data/auth_repository.dart';
 class MenuScreen extends ConsumerWidget {
   const MenuScreen({super.key});
 
-  void _showNotReady(BuildContext context, String feature) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text('$feature will be added soon.')));
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final user = ref.read(authRepositoryProvider).currentUser;
@@ -91,7 +85,7 @@ class MenuScreen extends ConsumerWidget {
                       child: _QuickAction(
                         icon: Icons.support_agent_rounded,
                         label: 'Support',
-                        onTap: () => _showNotReady(context, 'Support'),
+                        onTap: () => context.push('/support'),
                       ),
                     ),
                     SizedBox(
@@ -99,7 +93,7 @@ class MenuScreen extends ConsumerWidget {
                       child: _QuickAction(
                         icon: Icons.place_outlined,
                         label: 'Places',
-                        onTap: () => _showNotReady(context, 'Saved places'),
+                        onTap: () => context.push('/saved-places'),
                       ),
                     ),
                     SizedBox(

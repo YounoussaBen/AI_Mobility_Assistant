@@ -1,6 +1,9 @@
+import 'dart:collection';
+
 import 'package:dio/dio.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
+import '../domain/accra_operating_area.dart';
 import '../domain/place.dart';
 
 class GooglePlacesService {
@@ -26,6 +29,13 @@ class GooglePlacesService {
   final bool _usesBackend;
   final Future<String?> Function()? _accessToken;
   final Dio _dio;
+  final LinkedHashMap<
+    String,
+    ({DateTime createdAt, List<PlaceSuggestion> suggestions})
+  >
+  _autocompleteCache = LinkedHashMap();
+  final LinkedHashMap<String, ({DateTime createdAt, JourneyPlace place})>
+  _detailsCache = LinkedHashMap();
 
   Future<List<PlaceSuggestion>> autocomplete({
     required String input,
@@ -33,18 +43,30 @@ class GooglePlacesService {
     LatLng? near,
   }) async {
     if (input.trim().length < 2) return const [];
+    final localOrigin = near != null && AccraOperatingArea.contains(near)
+        ? near
+        : AccraOperatingArea.center;
+    final cacheKey =
+        '$sessionToken:${input.trim().toLowerCase()}:'
+        '${localOrigin.latitude.toStringAsFixed(3)},${localOrigin.longitude.toStringAsFixed(3)}';
+    final cached = _autocompleteCache[cacheKey];
+    if (cached != null &&
+        DateTime.now().difference(cached.createdAt) <
+            const Duration(seconds: 30)) {
+      return cached.suggestions;
+    }
 
     final body = <String, Object>{
       'input': input.trim(),
       'sessionToken': sessionToken,
       'languageCode': 'en',
-      if (near != null)
-        'locationBias': {
-          'circle': {
-            'center': {'latitude': near.latitude, 'longitude': near.longitude},
-            'radius': 50000.0,
-          },
-        },
+      'regionCode': AccraOperatingArea.countryCode,
+      'includedRegionCodes': const [AccraOperatingArea.countryCode],
+      'origin': {
+        'latitude': localOrigin.latitude,
+        'longitude': localOrigin.longitude,
+      },
+      'locationRestriction': AccraOperatingArea.placesRestriction,
     };
 
     final response = await _dio.post<Map<String, dynamic>>(
@@ -64,7 +86,7 @@ class GooglePlacesService {
     );
 
     final suggestions = response.data?['suggestions'] as List<dynamic>? ?? [];
-    return suggestions
+    final parsed = suggestions
         .map((item) => item as Map<String, dynamic>)
         .map((item) => item['placePrediction'] as Map<String, dynamic>?)
         .whereType<Map<String, dynamic>>()
@@ -72,15 +94,36 @@ class GooglePlacesService {
         .whereType<PlaceSuggestion>()
         .take(5)
         .toList(growable: false);
+    _autocompleteCache[cacheKey] = (
+      createdAt: DateTime.now(),
+      suggestions: parsed,
+    );
+    while (_autocompleteCache.length > 20) {
+      _autocompleteCache.remove(_autocompleteCache.keys.first);
+    }
+    return parsed;
   }
 
   Future<JourneyPlace> details({
     required String placeId,
     required String sessionToken,
   }) async {
+    final cached = _detailsCache[placeId];
+    if (cached != null &&
+        DateTime.now().difference(cached.createdAt) <
+            const Duration(hours: 24)) {
+      if (!AccraOperatingArea.contains(cached.place.location)) {
+        throw const OutsideAccraOperatingArea();
+      }
+      return cached.place;
+    }
     final response = await _dio.get<Map<String, dynamic>>(
       _usesBackend ? '/v1/maps/places/$placeId' : '/v1/places/$placeId',
-      queryParameters: {'sessionToken': sessionToken},
+      queryParameters: {
+        'sessionToken': sessionToken,
+        'languageCode': 'en',
+        'regionCode': AccraOperatingArea.countryCode,
+      },
       options: _usesBackend
           ? await _authenticatedOptions()
           : Options(
@@ -96,7 +139,7 @@ class GooglePlacesService {
       throw StateError('Google Places did not return this location.');
     }
 
-    return JourneyPlace(
+    final place = JourneyPlace(
       placeId: data['id'] as String? ?? placeId,
       name:
           (data['displayName'] as Map<String, dynamic>?)?['text'] as String? ??
@@ -108,6 +151,14 @@ class GooglePlacesService {
         (location['longitude'] as num).toDouble(),
       ),
     );
+    if (!AccraOperatingArea.contains(place.location)) {
+      throw const OutsideAccraOperatingArea();
+    }
+    _detailsCache[placeId] = (createdAt: DateTime.now(), place: place);
+    while (_detailsCache.length > 30) {
+      _detailsCache.remove(_detailsCache.keys.first);
+    }
+    return place;
   }
 
   PlaceSuggestion? _parseSuggestion(Map<String, dynamic> prediction) {

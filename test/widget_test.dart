@@ -77,7 +77,10 @@ void main() {
     await tester.tap(saveButton);
     await tester.pumpAndSettle();
 
-    expect(find.text('How can I help you move?'), findsOneWidget);
+    expect(
+      find.text('How can I help you move around Accra?'),
+      findsOneWidget,
+    );
     expect(find.text('Talk to Mobility AI'), findsOneWidget);
     expect(
       find.byKey(const Key('companion_microphone_button')),

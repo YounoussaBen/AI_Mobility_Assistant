@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_talk_short">Talk to Mobility AI</string>
+    <string name="shortcut_talk_long">Start a voice conversation</string>
+    <string name="shortcut_guidance_short">Resume guidance</string>
+    <string name="shortcut_guidance_long">Return to the active journey</string>
+    <string name="shortcut_lens_short">Journey Lens</string>
+    <string name="shortcut_lens_long">Open on-device camera awareness</string>
+</resources>

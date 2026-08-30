@@ -43,6 +43,7 @@ class SpeechOutputService {
     final cleaned = text.trim();
     if (cleaned.isEmpty) return;
     await _engine.stop();
+    await _engine.awaitSpeakCompletion(true);
     await _engine.setSpeechRate(profile.speechRate);
     if (profile.voiceName != null) {
       try {

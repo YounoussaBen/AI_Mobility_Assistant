@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../auth/data/auth_repository.dart';
+import '../../journey/data/route_cache_repository.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -60,6 +61,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               title: 'Display traffic',
               value: _showTraffic,
               onChanged: (value) => setState(() => _showTraffic = value),
+            ),
+            _SettingsRow(
+              title: 'Offline route cache',
+              subtitle: 'Remove routes saved for temporary network outages',
+              onTap: () async {
+                await ref.read(routeCacheRepositoryProvider).clear();
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Offline routes removed.')),
+                );
+              },
             ),
             const SizedBox(height: 34),
             const _SectionTitle('Notifications'),

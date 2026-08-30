@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-class SafetyPrivacyScreen extends StatelessWidget {
+import '../../history/application/journey_history_controller.dart';
+import '../../journey/application/journey_session_controller.dart';
+
+class SafetyPrivacyScreen extends ConsumerWidget {
   const SafetyPrivacyScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final historyEnabled = ref.watch(historyPrivacyControllerProvider);
     return Scaffold(
       body: SafeArea(
         child: ListView(
@@ -48,6 +53,21 @@ class SafetyPrivacyScreen extends StatelessWidget {
               title: 'Location',
               subtitle: 'Requested only when you plan or follow a journey.',
             ),
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              secondary: Icon(
+                Icons.history_rounded,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              title: const Text('Store travel history'),
+              subtitle: const Text(
+                'Keep completed journeys on this device. Turning this off clears existing history.',
+              ),
+              value: historyEnabled,
+              onChanged: (value) => ref
+                  .read(historyPrivacyControllerProvider.notifier)
+                  .setEnabled(value),
+            ),
             const _PrivacyInfoRow(
               icon: Icons.camera_alt_outlined,
               title: 'Camera assistance',
@@ -68,6 +88,37 @@ class SafetyPrivacyScreen extends StatelessWidget {
               title: 'Profile and account',
               subtitle: 'Review your current account',
               onTap: () => context.push('/profile'),
+            ),
+            _NavigationRow(
+              icon: Icons.forum_outlined,
+              title: 'Clear companion conversation',
+              subtitle: 'Remove recent on-device conversation memory',
+              onTap: () async {
+                final confirmed = await showDialog<bool>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('Clear conversation?'),
+                    content: const Text(
+                      'This removes recent conversation. Saved places, preferences, and travel history are unchanged.',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancel'),
+                      ),
+                      ElevatedButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('Clear conversation'),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirmed == true) {
+                  ref
+                      .read(journeySessionControllerProvider.notifier)
+                      .clearConversation();
+                }
+              },
             ),
           ],
         ),

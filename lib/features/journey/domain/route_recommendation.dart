@@ -69,11 +69,21 @@ abstract final class RouteRanker {
     if (preferences.fewerTransfers) {
       score += (route.transfers ?? 0) * 18;
     }
+    if (route.availability == RouteAvailability.unavailable) score += 10000;
+    if (route.availability == RouteAvailability.limited) score += 4;
+    if (preferences.wheelchairAccess &&
+        route.displayMode.toLowerCase().contains('wheelchair')) {
+      score -= 18;
+    }
     if (preferences.priority == JourneyPriority.fastest) {
       score = route.duration.inSeconds / 60.0;
     }
     if (preferences.priority == JourneyPriority.simplest) {
       score += route.steps.length * 0.8 + (route.transfers ?? 0) * 20;
+    }
+    if (preferences.priority == JourneyPriority.affordable) {
+      final fare = route.fareMinorUnits;
+      score = fare == null ? 5000 + score : fare / 100;
     }
     return score;
   }
@@ -97,6 +107,18 @@ abstract final class RouteRanker {
         route.transfers != null &&
         route.transfers == 0) {
       return 'Best match because this verified route has no transfers.';
+    }
+    if (recommended &&
+        preferences.priority == JourneyPriority.affordable &&
+        route.fareLabel != null) {
+      return 'Lowest provider-supplied or clearly simulated fare among the '
+          'options with price evidence.';
+    }
+    if (recommended &&
+        preferences.wheelchairAccess &&
+        route.displayMode.toLowerCase().contains('wheelchair')) {
+      return 'Best match for your wheelchair-access preference in the '
+          'clearly labelled provider scenario.';
     }
     if (route == fastest) {
       return 'Fastest option returned by the route provider right now.';

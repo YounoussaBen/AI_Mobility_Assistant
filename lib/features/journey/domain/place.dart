@@ -27,4 +27,22 @@ class JourneyPlace {
   final String name;
   final String address;
   final LatLng location;
+
+  Map<String, Object> toJson() => {
+    'placeId': placeId,
+    'name': name,
+    'address': address,
+    'latitude': location.latitude,
+    'longitude': location.longitude,
+  };
+
+  factory JourneyPlace.fromJson(Map<String, dynamic> json) => JourneyPlace(
+    placeId: json['placeId'] as String? ?? '',
+    name: json['name'] as String? ?? 'Saved destination',
+    address: json['address'] as String? ?? '',
+    location: LatLng(
+      (json['latitude'] as num?)?.toDouble() ?? 0,
+      (json['longitude'] as num?)?.toDouble() ?? 0,
+    ),
+  );
 }

@@ -10,13 +10,21 @@ import 'package:speech_to_text/speech_to_text.dart';
 import '../../../app/config/app_config.dart';
 import '../../auth/data/auth_repository.dart';
 import '../../companion/domain/companion_models.dart';
+import '../../companion/application/response_priority_service.dart';
 import '../../journey/application/journey_session_controller.dart';
 import '../../journey/data/gemini_destination_service.dart';
+import '../../journey/domain/route_recommendation.dart';
+import '../../journey/domain/route_option.dart';
+import '../../preferences/application/mobility_preferences_controller.dart';
+import '../../preferences/domain/mobility_preferences.dart';
+import '../../saved_places/application/saved_places_controller.dart';
+import '../../voice/data/accra_speech_locale.dart';
 import '../../voice/application/voice_profile_controller.dart';
-import '../../voice/data/speech_output_service.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.startWithVoice = false});
+
+  final bool startWithVoice;
 
   @override
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
@@ -31,8 +39,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _understanding = false;
 
   static const _suggestions = [
-    'Take me to the nearest pharmacy',
-    'Find a route with less walking',
+    'Take me to Accra Mall',
+    'Find a route to 37 Station with less walking',
     'What’s ahead of me?',
     'Repeat the last instruction',
   ];
@@ -46,6 +54,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       backendUrl: AppConfig.companionBackendUrl,
       accessToken: ref.read(authRepositoryProvider).idToken,
     );
+    if (widget.startWithVoice) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_toggleListening());
+      });
+    }
   }
 
   @override
@@ -89,6 +102,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       return;
     }
 
+    final localeId = await preferredAccraSpeechLocale(_speech);
+    if (!mounted) return;
     HapticFeedback.mediumImpact();
     setState(() {
       _listening = true;
@@ -106,6 +121,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         listenMode: ListenMode.confirmation,
         pauseFor: const Duration(seconds: 3),
         listenFor: const Duration(seconds: 20),
+        localeId: localeId,
       ),
     );
   }
@@ -133,7 +149,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final session = ref.read(journeySessionControllerProvider.notifier);
     session.beginRequest(text);
 
-    final command = await _interpreter.interpret(text);
+    final command = await _interpreter.interpret(
+      text,
+      context: _companionContext(),
+    );
     if (!mounted) return;
     setState(() => _understanding = false);
 
@@ -152,35 +171,98 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         );
         context.push('/plan?prompt=${Uri.encodeQueryComponent(query)}');
       case CompanionAction.lookAhead:
-        session.addTurn(
-          AssistantSpeaker.companion,
-          'Opening an on-device Look Ahead scan.',
-          tool: true,
-        );
-        context.push('/look-ahead');
+        final active = ref.read(journeySessionControllerProvider);
+        if (active.hasActiveJourney) {
+          session.setGuidanceView(GuidanceView.lookAhead);
+          session.addTurn(
+            AssistantSpeaker.companion,
+            'Opening Journey Lens inside your active guidance.',
+            tool: true,
+          );
+          context.push('/guidance');
+        } else {
+          session.addTurn(
+            AssistantSpeaker.companion,
+            'Opening the on-device Journey Lens.',
+            tool: true,
+          );
+          context.push('/look-ahead');
+        }
       case CompanionAction.repeatInstruction:
         await _repeatInstruction();
       case CompanionAction.pauseJourney:
         if (ref.read(journeySessionControllerProvider).hasActiveJourney) {
           session.togglePaused();
-          setState(() => _localMessage = 'Journey guidance paused.');
+          _respond('Journey guidance paused.');
         } else {
           session.setPhase(CompanionPhase.ready);
-          setState(
-            () => _localMessage = 'There is no active journey to pause.',
-          );
+          _respond('There is no active journey to pause.');
         }
       case CompanionAction.resumeJourney:
         final current = ref.read(journeySessionControllerProvider);
         if (current.phase == CompanionPhase.paused) {
           session.togglePaused();
+          _respond('Journey guidance resumed.');
           context.push('/guidance');
         } else {
           session.setPhase(CompanionPhase.ready);
-          setState(
-            () => _localMessage = 'There is no paused journey to resume.',
+          _respond('There is no paused journey to resume.');
+        }
+      case CompanionAction.findTransport:
+        final current = ref.read(journeySessionControllerProvider);
+        if (current.destination == null) {
+          _respond('Tell me where you are going, then I can check transport.');
+        } else {
+          _respond(
+            'I’ll refresh transport choices for ${current.destination!.name}. '
+            'Prototype provider results are clearly marked as simulated.',
+            tool: true,
+          );
+          context.push(
+            '/plan?resumeDestination=true&transport=true'
+            '${current.hasActiveJourney ? '&reroute=true' : ''}',
           );
         }
+      case CompanionAction.explainRecommendation:
+        _explainRecommendation();
+      case CompanionAction.alternativeRoute:
+        _chooseAlternative();
+      case CompanionAction.reportDelay:
+        final current = ref.read(journeySessionControllerProvider);
+        if (current.destination == null) {
+          _respond('There is no planned journey to update yet.');
+        } else {
+          _respond(
+            'I’ll refresh the route and transport evidence. You will confirm '
+            'any materially different route before it replaces guidance.',
+            tool: true,
+          );
+          context.push('/plan?resumeDestination=true&reroute=true');
+        }
+      case CompanionAction.cheaperRoute:
+        _chooseCheapest();
+      case CompanionAction.fewerTransfers:
+        _chooseFewestTransfers();
+      case CompanionAction.saveDestination:
+        final destination = ref
+            .read(journeySessionControllerProvider)
+            .destination;
+        if (destination == null) {
+          _respond('Confirm a destination before saving it.');
+        } else {
+          final saved = ref.read(savedPlacesControllerProvider.notifier);
+          if (!saved.contains(destination.placeId)) saved.toggle(destination);
+          _respond('${destination.name} is saved on this device.');
+        }
+      case CompanionAction.listSavedPlaces:
+        context.push('/saved-places');
+      case CompanionAction.endJourney:
+        await _confirmEndJourney();
+      case CompanionAction.conversationalReply:
+        _respond(
+          command.message ??
+              'I’m here. Ask me about your journey or tell me what to change.',
+        );
       case CompanionAction.unknown:
         if (!ref.read(journeySessionControllerProvider).hasActiveJourney) {
           session.setPhase(CompanionPhase.clarifying);
@@ -190,6 +272,184 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               command.message ??
               'I can plan a journey, repeat guidance, pause, or look ahead.';
         });
+    }
+  }
+
+  CompanionContext _companionContext() {
+    final session = ref.read(journeySessionControllerProvider);
+    final preferences =
+        ref.read(mobilityPreferencesControllerProvider).value ??
+        const MobilityPreferences();
+    final saved = ref.read(savedPlacesControllerProvider);
+    String routeSummary(route) {
+      final evidence = route.source == JourneyEvidenceSource.simulated
+          ? 'simulated'
+          : route.source == JourneyEvidenceSource.cached
+          ? 'cached'
+          : 'live';
+      return '${route.displayMode}: ${route.durationLabel}, '
+          '${route.distanceLabel}, fare ${route.fareLabel ?? 'unknown'}, '
+          'wait ${route.waitingLabel ?? 'unknown'}, transfers '
+          '${route.transfers?.toString() ?? 'unknown'}, $evidence evidence';
+    }
+
+    return CompanionContext(
+      recentTurns: session.turns,
+      destination: session.destination?.name,
+      selectedRoute: session.selectedRoute == null
+          ? null
+          : routeSummary(session.selectedRoute),
+      routeChoices: [for (final route in session.routes) routeSummary(route)],
+      savedPlaces: [for (final place in saved) place.name],
+      preferenceSummary:
+          'priority ${preferences.priority.label}; reduced walking '
+          '${preferences.reducedWalking}; fewer transfers '
+          '${preferences.fewerTransfers}; wheelchair access '
+          '${preferences.wheelchairAccess}',
+    );
+  }
+
+  void _respond(String message, {bool tool = false}) {
+    ref
+        .read(journeySessionControllerProvider.notifier)
+        .addTurn(AssistantSpeaker.companion, message, tool: tool);
+    if (mounted) setState(() => _localMessage = message);
+    unawaited(_speakResponse(message));
+  }
+
+  Future<void> _speakResponse(String message) async {
+    try {
+      final profile = await ref.read(voiceProfileControllerProvider.future);
+      await ref
+          .read(responsePriorityServiceProvider)
+          .speak(message, profile, priority: ResponsePriority.conversation);
+    } catch (_) {
+      // Text remains the authoritative fallback when speech is unavailable.
+    }
+  }
+
+  void _explainRecommendation() {
+    final session = ref.read(journeySessionControllerProvider);
+    final route = session.selectedRoute;
+    if (route == null) {
+      _respond('Choose a route first, then I can explain the evidence.');
+      return;
+    }
+    final preferences =
+        ref.read(mobilityPreferencesControllerProvider).value ??
+        const MobilityPreferences();
+    final ranked = RouteRanker.rank(session.routes, preferences);
+    final decision = ranked
+        .where((item) => item.route.routeKey == route.routeKey)
+        .firstOrNull;
+    _respond(
+      '${decision?.explanation ?? 'This is your selected route.'} '
+      '${route.durationLabel}, ${route.distanceLabel}. '
+      '${route.fareLabel == null ? 'Fare is unknown.' : 'Fare: ${route.fareLabel}.'} '
+      '${_sourceNotice(route.source)}',
+    );
+  }
+
+  void _chooseAlternative() {
+    final current = ref.read(journeySessionControllerProvider);
+    if (current.hasActiveJourney) {
+      _respond(
+        'I’ll calculate replacement choices. Your current route stays active '
+        'until you confirm another one.',
+        tool: true,
+      );
+      context.push('/plan?resumeDestination=true&reroute=true');
+      return;
+    }
+    final controller = ref.read(journeySessionControllerProvider.notifier);
+    final route = controller.selectAlternative();
+    _respond(
+      route == null
+          ? 'No alternative route is loaded. I can refresh the journey instead.'
+          : 'I selected ${route.displayMode}: ${route.durationLabel}, '
+                '${route.distanceLabel}. ${_sourceNotice(route.source)}',
+    );
+  }
+
+  void _chooseCheapest() {
+    final current = ref.read(journeySessionControllerProvider);
+    if (current.hasActiveJourney) {
+      _respond(
+        'I’ll refresh fares. Your current guidance stays unchanged until you '
+        'confirm a replacement.',
+        tool: true,
+      );
+      context.push('/plan?resumeDestination=true&transport=true&reroute=true');
+      return;
+    }
+    final route = ref
+        .read(journeySessionControllerProvider.notifier)
+        .selectCheapest();
+    _respond(
+      route == null
+          ? 'None of the current routes includes fare evidence.'
+          : 'The lowest evidenced fare is ${route.fareLabel} for '
+                '${route.displayMode}. ${_sourceNotice(route.source)}',
+    );
+  }
+
+  void _chooseFewestTransfers() {
+    final current = ref.read(journeySessionControllerProvider);
+    if (current.hasActiveJourney) {
+      _respond(
+        'I’ll refresh routes with transfer evidence. Your current guidance '
+        'stays unchanged until you confirm a replacement.',
+        tool: true,
+      );
+      context.push('/plan?resumeDestination=true&reroute=true');
+      return;
+    }
+    final route = ref
+        .read(journeySessionControllerProvider.notifier)
+        .selectFewestTransfers();
+    _respond(
+      route == null
+          ? 'Transfer evidence is unavailable for the current choices.'
+          : 'I selected ${route.displayMode} with ${route.transfers} transfers.',
+    );
+  }
+
+  String _sourceNotice(JourneyEvidenceSource source) => switch (source) {
+    JourneyEvidenceSource.live => 'This comes from a connected route source.',
+    JourneyEvidenceSource.simulated =>
+      'This is simulated prototype data, not live availability.',
+    JourneyEvidenceSource.cached =>
+      'This is an offline saved route; conditions may have changed.',
+  };
+
+  Future<void> _confirmEndJourney() async {
+    final current = ref.read(journeySessionControllerProvider);
+    if (!current.hasActiveJourney) {
+      _respond('There is no active journey to end.');
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('End this journey?'),
+        content: const Text(
+          'Guidance will stop, but our conversation remains.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep guiding'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('End journey'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      ref.read(journeySessionControllerProvider.notifier).endJourney();
+      _respond('Journey ended. I kept our recent conversation on this device.');
     }
   }
 
@@ -205,7 +465,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
     try {
       final profile = await ref.read(voiceProfileControllerProvider.future);
-      await ref.read(speechOutputServiceProvider).speak(instruction, profile);
+      await ref
+          .read(responsePriorityServiceProvider)
+          .speak(
+            instruction,
+            profile,
+            priority: ResponsePriority.immediateManeuver,
+          );
       if (mounted) setState(() => _localMessage = instruction);
     } catch (_) {
       if (mounted) setState(() => _localMessage = instruction);
@@ -295,7 +561,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         Text(
                           session.hasActiveJourney
                               ? 'Your companion is with you'
-                              : 'How can I help you move?',
+                              : 'How can I help you move around Accra?',
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.headlineLarge,
                         ),
@@ -330,6 +596,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             transcript: transcript,
                             response: _localMessage,
                           ),
+                          if (session.turns.length > 1) ...[
+                            const SizedBox(height: 12),
+                            _RecentConversation(turns: session.turns),
+                          ],
                         ],
                         const SizedBox(height: 30),
                         Row(
@@ -367,10 +637,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               session.hasActiveJourney ||
                               session.phase == CompanionPhase.paused,
                           onPlan: () => context.push('/plan'),
-                          onLookAhead: () => context.push('/look-ahead'),
-                          onSavedPlaces: () => _showUnavailable(
-                            'Saved places are not connected yet.',
-                          ),
+                          onLookAhead: () {
+                            if (session.hasActiveJourney) {
+                              ref
+                                  .read(
+                                    journeySessionControllerProvider.notifier,
+                                  )
+                                  .setGuidanceView(GuidanceView.lookAhead);
+                              context.push('/guidance');
+                            } else {
+                              context.push('/look-ahead');
+                            }
+                          },
+                          onSavedPlaces: () => context.push('/saved-places'),
                           onResume: () => context.push('/guidance'),
                         ),
                       ],
@@ -384,11 +663,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ),
     );
   }
+}
 
-  void _showUnavailable(String message) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+class _RecentConversation extends StatelessWidget {
+  const _RecentConversation({required this.turns});
+
+  final List<AssistantTurn> turns;
+
+  @override
+  Widget build(BuildContext context) {
+    final recent = turns.skip(turns.length > 6 ? turns.length - 6 : 0);
+    return ExpansionTile(
+      tilePadding: const EdgeInsets.symmetric(horizontal: 4),
+      title: const Text('Recent conversation'),
+      subtitle: const Text('Stored on this device'),
+      children: [
+        for (final turn in recent)
+          ListTile(
+            dense: true,
+            leading: Icon(
+              turn.speaker == AssistantSpeaker.user
+                  ? Icons.person_outline_rounded
+                  : Icons.auto_awesome_rounded,
+            ),
+            title: Text(
+              turn.speaker == AssistantSpeaker.user ? 'You' : 'Mobility AI',
+            ),
+            subtitle: Text(turn.text),
+          ),
+      ],
+    );
   }
 }
 
@@ -412,9 +716,20 @@ class _HomeHeader extends StatelessWidget {
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: Text(
-            'Mobility AI',
-            style: Theme.of(context).textTheme.titleLarge,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Mobility AI',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              Text(
+                'Accra pilot',
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
           ),
         ),
         IconButton(

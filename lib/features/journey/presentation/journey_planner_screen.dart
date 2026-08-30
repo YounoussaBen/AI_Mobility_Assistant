@@ -13,27 +13,38 @@ import 'package:speech_to_text/speech_to_text.dart';
 import '../../../app/config/app_config.dart';
 import '../../auth/data/auth_repository.dart';
 import '../../companion/domain/companion_models.dart';
+import '../../companion/application/response_priority_service.dart';
 import '../../preferences/application/mobility_preferences_controller.dart';
 import '../../preferences/domain/mobility_preferences.dart';
 import '../../voice/application/voice_profile_controller.dart';
-import '../../voice/data/speech_output_service.dart';
+import '../../voice/data/accra_speech_locale.dart';
 import '../application/journey_session_controller.dart';
 import '../data/gemini_destination_service.dart';
 import '../data/google_places_service.dart';
 import '../data/google_routes_service.dart';
+import '../data/route_cache_repository.dart';
+import '../domain/accra_operating_area.dart';
 import '../domain/place.dart';
 import '../domain/route_option.dart';
 import '../domain/route_recommendation.dart';
+import '../../saved_places/application/saved_places_controller.dart';
+import '../../transport/data/transport_availability_service.dart';
 
 class JourneyPlannerScreen extends ConsumerStatefulWidget {
   const JourneyPlannerScreen({
     super.key,
     this.startWithVoice = false,
     this.initialPrompt,
+    this.resumeDestination = false,
+    this.reroute = false,
+    this.transportOnly = false,
   });
 
   final bool startWithVoice;
   final String? initialPrompt;
+  final bool resumeDestination;
+  final bool reroute;
+  final bool transportOnly;
 
   @override
   ConsumerState<JourneyPlannerScreen> createState() =>
@@ -42,8 +53,6 @@ class JourneyPlannerScreen extends ConsumerStatefulWidget {
 
 class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
     with WidgetsBindingObserver {
-  static const _accra = LatLng(5.6037, -0.1870);
-
   late final GooglePlacesService _places;
   late final GoogleRoutesService _routesService;
   late final GeminiDestinationService _gemini;
@@ -58,7 +67,7 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
   JourneyPlace? _destination;
   List<PlaceSuggestion> _suggestions = const [];
   List<RankedRoute> _rankedRoutes = const [];
-  JourneyTravelMode? _selectedMode;
+  String? _selectedRouteKey;
   _LocationState _locationState = _LocationState.loading;
   String _sessionToken = '';
   String? _message;
@@ -82,6 +91,7 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
       apiKey: AppConfig.googleMapsWebServiceApiKey,
       backendUrl: AppConfig.companionBackendUrl,
       accessToken: ref.read(authRepositoryProvider).idToken,
+      cacheRepository: ref.read(routeCacheRepositoryProvider),
     );
     _gemini = GeminiDestinationService(
       apiKey: AppConfig.geminiApiKey,
@@ -98,6 +108,31 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
         unawaited(_searchPlaces(prompt));
       } else if (widget.startWithVoice) {
         unawaited(_startListening());
+      } else if (widget.resumeDestination) {
+        final session = ref.read(journeySessionControllerProvider);
+        final destination = session.destination;
+        if (destination != null) {
+          if (!AccraOperatingArea.contains(destination.location)) {
+            setState(() {
+              _message =
+                  'That saved destination is outside this Accra-only pilot.';
+            });
+            return;
+          }
+          _destination = destination;
+          _searchController.text = destination.name;
+          if (!widget.reroute && session.routes.isNotEmpty) {
+            final preferences =
+                ref.read(mobilityPreferencesControllerProvider).value ??
+                const MobilityPreferences();
+            _rankedRoutes = RouteRanker.rank(session.routes, preferences);
+            _selectedRouteKey = session.selectedRoute?.routeKey;
+          } else if (widget.reroute) {
+            ref.read(journeySessionControllerProvider.notifier).beginReroute();
+          }
+          setState(() {});
+          unawaited(_loadRoutes());
+        }
       }
     });
   }
@@ -157,8 +192,16 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
         ),
       );
       if (!mounted) return;
+      final point = LatLng(position.latitude, position.longitude);
+      if (!AccraOperatingArea.contains(point)) {
+        setState(() {
+          _origin = null;
+          _locationState = _LocationState.outsideAccra;
+        });
+        return;
+      }
       setState(() {
-        _origin = LatLng(position.latitude, position.longitude);
+        _origin = point;
         _locationState = _LocationState.ready;
       });
       if (_destination != null) unawaited(_loadRoutes());
@@ -177,7 +220,7 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
       if (_destination != null && query != _destination!.name) {
         _destination = null;
         _rankedRoutes = const [];
-        _selectedMode = null;
+        _selectedRouteKey = null;
         _showMap = false;
       }
       if (query.length < 2) {
@@ -213,7 +256,7 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
         _suggestions = suggestions;
         _searching = false;
         _message = suggestions.isEmpty
-            ? 'No matching places were found. Try a place name and area.'
+            ? 'No matching Accra places were found. Try a landmark and neighbourhood.'
             : null;
       });
     } catch (_) {
@@ -258,6 +301,13 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
           .read(journeySessionControllerProvider.notifier)
           .destinationConfirmed(destination);
       await _loadRoutes();
+    } on OutsideAccraOperatingArea {
+      if (!mounted) return;
+      setState(() {
+        _searching = false;
+        _message =
+            'That place is outside the Accra pilot area. Choose a destination in Accra.';
+      });
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -275,43 +325,72 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
     if (origin == null) {
       return;
     }
+    if (!AccraOperatingArea.contains(origin) ||
+        !AccraOperatingArea.contains(destination.location)) {
+      setState(() {
+        _message =
+            'Route planning is limited to journeys inside the Accra pilot area.';
+      });
+      return;
+    }
+    if (_loadingRoutes) return;
 
     setState(() {
       _loadingRoutes = true;
       _rankedRoutes = const [];
-      _selectedMode = null;
+      _selectedRouteKey = null;
       _message = null;
     });
-    ref
-        .read(journeySessionControllerProvider.notifier)
-        .setPhase(CompanionPhase.checkingRoutes);
+    if (!widget.reroute) {
+      ref
+          .read(journeySessionControllerProvider.notifier)
+          .setPhase(CompanionPhase.checkingRoutes);
+    }
 
-    final routes = await _routesService.routes(
+    final googleRoutes = await _routesService.routes(
       origin: origin,
       destination: destination.location,
     );
     if (!mounted) return;
+    final transportRoutes = await ref
+        .read(transportAvailabilityServiceProvider)
+        .search(
+          origin: origin,
+          destination: destination.location,
+          baseRoutes: googleRoutes,
+        );
+    if (!mounted) return;
+    final routes = [
+      if (!widget.transportOnly) ...googleRoutes,
+      ...transportRoutes,
+    ];
     final preferences =
         ref.read(mobilityPreferencesControllerProvider).value ??
         const MobilityPreferences();
     final ranked = RouteRanker.rank(routes, preferences);
-    final selected = ranked.firstOrNull?.route.mode;
+    final selected = ranked.firstOrNull?.route.routeKey;
     setState(() {
       _loadingRoutes = false;
       _rankedRoutes = ranked;
-      _selectedMode = selected;
+      _selectedRouteKey = selected;
       _message = ranked.isEmpty
           ? AppConfig.googleMapsWebServiceApiKey.isEmpty &&
                     AppConfig.companionBackendUrl.isEmpty
                 ? 'Route comparison needs a configured Maps web-service connection.'
                 : 'No verified route options are available right now.'
+          : ranked.any(
+              (item) => item.route.source == JourneyEvidenceSource.cached,
+            )
+          ? 'Using an offline route saved on this device. Conditions may have changed.'
           : null;
     });
     final controller = ref.read(journeySessionControllerProvider.notifier);
-    controller.routesReady([
-      for (final rankedRoute in ranked) rankedRoute.route,
-    ]);
-    if (selected != null) controller.selectRoute(selected);
+    if (!widget.reroute) {
+      controller.routesReady([
+        for (final rankedRoute in ranked) rankedRoute.route,
+      ], preferredRouteKey: selected);
+      if (selected != null) controller.selectRouteByKey(selected);
+    }
   }
 
   Future<void> _submitSearch() async {
@@ -353,6 +432,8 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
       }
       return;
     }
+    final localeId = await preferredAccraSpeechLocale(_speech);
+    if (!mounted) return;
     FocusManager.instance.primaryFocus?.unfocus();
     HapticFeedback.mediumImpact();
     setState(() {
@@ -367,6 +448,7 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
         listenMode: ListenMode.search,
         pauseFor: const Duration(seconds: 3),
         listenFor: const Duration(seconds: 20),
+        localeId: localeId,
       ),
     );
   }
@@ -401,7 +483,7 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
         destination == null ||
         destination.length < 2) {
       setState(() {
-        _message = 'Tell me a destination, such as “nearest pharmacy”.';
+        _message = 'Tell me an Accra destination, such as “Osu pharmacy”.';
       });
       return;
     }
@@ -420,10 +502,14 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
     }
   }
 
-  void _selectRoute(JourneyTravelMode mode) {
+  void _selectRoute(String routeKey) {
     HapticFeedback.selectionClick();
-    setState(() => _selectedMode = mode);
-    ref.read(journeySessionControllerProvider.notifier).selectRoute(mode);
+    setState(() => _selectedRouteKey = routeKey);
+    if (!widget.reroute) {
+      ref
+          .read(journeySessionControllerProvider.notifier)
+          .selectRouteByKey(routeKey);
+    }
     if (_showMap) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _fitMap());
     }
@@ -434,12 +520,21 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
     final walking = route.walkingDistanceMeters;
     final text =
         '${ranked.title}. ${ranked.explanation} '
-        '${route.durationLabel}, ${route.distanceLabel}. '
+        '${route.displayMode}. ${route.durationLabel}, ${route.distanceLabel}. '
         '${walking == null ? '' : 'Verified walking: $walking metres. '}'
+        '${route.waitingLabel == null ? '' : '${route.waitingLabel}. '}'
+        '${route.fareLabel == null ? 'Fare unavailable. ' : 'Fare ${route.fareLabel}. '}'
+        '${route.source == JourneyEvidenceSource.simulated
+            ? 'Provider data is simulated, not live. '
+            : route.source == JourneyEvidenceSource.cached
+            ? 'This is an offline saved route. '
+            : ''}'
         'Step-free access data is unavailable.';
     try {
       final profile = await ref.read(voiceProfileControllerProvider.future);
-      await ref.read(speechOutputServiceProvider).speak(text, profile);
+      await ref
+          .read(responsePriorityServiceProvider)
+          .speak(text, profile, priority: ResponsePriority.informational);
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -449,16 +544,91 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
   }
 
   Future<void> _startJourney(RankedRoute ranked) async {
-    _selectRoute(ranked.route.mode);
-    ref.read(journeySessionControllerProvider.notifier).startJourney();
+    _selectRoute(ranked.route.routeKey);
+    final controller = ref.read(journeySessionControllerProvider.notifier);
+    if (widget.reroute) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Use this replacement route?'),
+          content: Text(
+            '${ranked.route.displayMode} takes ${ranked.route.durationLabel}. '
+            'Guidance will restart from the beginning of this updated route.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Keep current route'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Use replacement'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+      controller.routesReady([
+        for (final item in _rankedRoutes) item.route,
+      ], preferredRouteKey: ranked.route.routeKey);
+      controller.addTurn(
+        AssistantSpeaker.companion,
+        'Replacement route confirmed: ${ranked.route.displayMode}.',
+        tool: true,
+      );
+    }
+    controller.startJourney();
     if (!mounted) return;
     context.push('/guidance');
+  }
+
+  void _leavePlanner() {
+    if (widget.reroute) {
+      ref.read(journeySessionControllerProvider.notifier).cancelReroute();
+    }
+    context.pop();
+  }
+
+  Future<void> _requestTransport(RankedRoute ranked) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Submit prototype request?'),
+        content: Text(
+          '${ranked.route.displayMode}\n\n'
+          '${ranked.route.waitingLabel ?? 'Waiting time unknown'} · '
+          '${ranked.route.fareLabel ?? 'Fare unknown'}\n\n'
+          'This provider is simulated for evaluation. No real vehicle will be dispatched.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Submit simulated request'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final request = await ref
+        .read(transportAvailabilityServiceProvider)
+        .request(ranked.route);
+    if (!mounted) return;
+    ref
+        .read(journeySessionControllerProvider.notifier)
+        .addTurn(AssistantSpeaker.companion, request.message, tool: true);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${request.message} Reference ${request.id}.')),
+    );
   }
 
   Future<void> _fitMap() async {
     final controller = _mapController;
     final route = _rankedRoutes
-        .where((item) => item.route.mode == _selectedMode)
+        .where((item) => item.route.routeKey == _selectedRouteKey)
         .firstOrNull
         ?.route;
     if (controller == null || route == null || route.path.isEmpty) return;
@@ -484,13 +654,17 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
       );
     } catch (_) {
       await controller.animateCamera(
-        CameraUpdate.newLatLngZoom(_destination?.location ?? _accra, 14),
+        CameraUpdate.newLatLngZoom(
+          _destination?.location ?? AccraOperatingArea.center,
+          14,
+        ),
       );
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final savedPlaces = ref.watch(savedPlacesControllerProvider);
     final phase = _listening
         ? CompanionPhase.listening
         : _understandingSpeech
@@ -501,163 +675,184 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
         ? CompanionPhase.routeReady
         : CompanionPhase.clarifying;
 
-    return Scaffold(
-      appBar: AppBar(
-        leading: IconButton(
-          tooltip: 'Back',
-          onPressed: () => context.pop(),
-          icon: const Icon(Icons.arrow_back_rounded),
-        ),
-        title: const Text('Plan with Mobility AI'),
-        actions: [
-          IconButton(
-            tooltip: 'Voice and guidance settings',
-            onPressed: () => context.push('/voice-guidance'),
-            icon: const Icon(Icons.record_voice_over_outlined),
+    return PopScope(
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop && widget.reroute) {
+          ref.read(journeySessionControllerProvider.notifier).cancelReroute();
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            tooltip: 'Back',
+            onPressed: _leavePlanner,
+            icon: const Icon(Icons.arrow_back_rounded),
           ),
-        ],
-      ),
-      body: SafeArea(
-        top: false,
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 40),
-          children: [
-            Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 760),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _PlannerStatus(phase: phase),
-                    const SizedBox(height: 18),
-                    Text(
-                      _destination == null
-                          ? 'Where should we go?'
-                          : 'Here’s what I verified',
-                      style: Theme.of(context).textTheme.headlineLarge,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _destination == null
-                          ? 'Say or type a place. You’ll confirm the exact result before I compare routes.'
-                          : 'Choose a route after reviewing the reason and any missing information.',
-                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    const SizedBox(height: 22),
-                    _DestinationComposer(
-                      controller: _searchController,
-                      focusNode: _searchFocus,
-                      listening: _listening,
-                      busy: _searching || _understandingSpeech,
-                      onChanged: _onQueryChanged,
-                      onSubmitted: (_) => _submitSearch(),
-                      onVoice: _startListening,
-                      onClear: () {
-                        _searchController.clear();
-                        _searchFocus.requestFocus();
-                        setState(() {
-                          _destination = null;
-                          _suggestions = const [];
-                          _rankedRoutes = const [];
-                          _selectedMode = null;
-                          _message = null;
-                          _showMap = false;
-                        });
-                      },
-                    ),
-                    if (_locationState.needsAttention) ...[
-                      const SizedBox(height: 12),
-                      _LocationIssue(
-                        state: _locationState,
-                        onRetry: () => _loadCurrentLocation(
-                          requestPermission:
-                              _locationState == _LocationState.denied,
-                        ),
-                        onSettings: _openLocationSettings,
-                      ),
-                    ],
-                    if (_message != null) ...[
-                      const SizedBox(height: 12),
-                      _InlineMessage(message: _message!),
-                    ],
-                    if (_suggestions.isNotEmpty) ...[
-                      const SizedBox(height: 12),
-                      _SuggestionsCard(
-                        suggestions: _suggestions,
-                        onSelected: _selectSuggestion,
-                      ),
-                    ],
-                    if (_destination != null) ...[
-                      const SizedBox(height: 20),
-                      _ConfirmedDestinationCard(destination: _destination!),
-                    ],
-                    if (_loadingRoutes) ...[
-                      const SizedBox(height: 14),
-                      const _RouteLoadingSkeleton(),
-                    ],
-                    if (_rankedRoutes.isNotEmpty) ...[
-                      const SizedBox(height: 26),
-                      Text(
-                        'Route choices',
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                      const SizedBox(height: 5),
-                      Text(
-                        'Compared by app rules using your saved travel preferences.',
-                        style: Theme.of(context).textTheme.bodyMedium,
-                      ),
-                      const SizedBox(height: 12),
-                      for (final ranked in _rankedRoutes) ...[
-                        _RouteDecisionCard(
-                          ranked: ranked,
-                          selected: ranked.route.mode == _selectedMode,
-                          onSelect: () => _selectRoute(ranked.route.mode),
-                          onHear: () => _hearRoute(ranked),
-                          onStart: () => _startJourney(ranked),
-                        ),
-                        const SizedBox(height: 12),
-                      ],
-                      OutlinedButton.icon(
-                        onPressed: () {
-                          setState(() => _showMap = !_showMap);
-                          if (_showMap) {
-                            WidgetsBinding.instance.addPostFrameCallback(
-                              (_) => _fitMap(),
-                            );
-                          }
-                        },
-                        icon: Icon(
-                          _showMap
-                              ? Icons.visibility_off_outlined
-                              : Icons.map_outlined,
-                        ),
-                        label: Text(_showMap ? 'Hide map' : 'Show map preview'),
-                      ),
-                      if (_showMap) ...[
-                        const SizedBox(height: 12),
-                        _MapPreview(
-                          origin: _origin,
-                          destination: _destination,
-                          routes: [
-                            for (final ranked in _rankedRoutes) ranked.route,
-                          ],
-                          selectedMode: _selectedMode,
-                          onCreated: (controller) {
-                            _mapController = controller;
-                            unawaited(_fitMap());
-                          },
-                        ),
-                      ],
-                      const SizedBox(height: 12),
-                      const _WalkingSafetyNotice(),
-                    ],
-                  ],
-                ),
-              ),
+          title: const Text('Plan in Accra'),
+          actions: [
+            IconButton(
+              tooltip: 'Voice and guidance settings',
+              onPressed: () => context.push('/voice-guidance'),
+              icon: const Icon(Icons.record_voice_over_outlined),
             ),
           ],
+        ),
+        body: SafeArea(
+          top: false,
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 40),
+            children: [
+              Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 760),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _PlannerStatus(phase: phase),
+                      const SizedBox(height: 18),
+                      Text(
+                        _destination == null
+                            ? 'Where in Accra should we go?'
+                            : 'Here’s what I verified',
+                        style: Theme.of(context).textTheme.headlineLarge,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _destination == null
+                            ? 'Say or type an Accra place or landmark. You’ll confirm the exact result before I compare routes.'
+                            : 'Choose a route after reviewing the reason and any missing information.',
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 22),
+                      _DestinationComposer(
+                        controller: _searchController,
+                        focusNode: _searchFocus,
+                        listening: _listening,
+                        busy: _searching || _understandingSpeech,
+                        onChanged: _onQueryChanged,
+                        onSubmitted: (_) => _submitSearch(),
+                        onVoice: _startListening,
+                        onClear: () {
+                          _searchController.clear();
+                          _searchFocus.requestFocus();
+                          setState(() {
+                            _destination = null;
+                            _suggestions = const [];
+                            _rankedRoutes = const [];
+                            _selectedRouteKey = null;
+                            _message = null;
+                            _showMap = false;
+                          });
+                        },
+                      ),
+                      if (_locationState.needsAttention) ...[
+                        const SizedBox(height: 12),
+                        _LocationIssue(
+                          state: _locationState,
+                          onRetry: () => _loadCurrentLocation(
+                            requestPermission:
+                                _locationState == _LocationState.denied,
+                          ),
+                          onSettings: _openLocationSettings,
+                        ),
+                      ],
+                      if (_message != null) ...[
+                        const SizedBox(height: 12),
+                        _InlineMessage(message: _message!),
+                      ],
+                      if (_suggestions.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        _SuggestionsCard(
+                          suggestions: _suggestions,
+                          onSelected: _selectSuggestion,
+                        ),
+                      ],
+                      if (_destination != null) ...[
+                        const SizedBox(height: 20),
+                        _ConfirmedDestinationCard(
+                          destination: _destination!,
+                          saved: savedPlaces.any(
+                            (place) => place.placeId == _destination!.placeId,
+                          ),
+                          onToggleSaved: () => ref
+                              .read(savedPlacesControllerProvider.notifier)
+                              .toggle(_destination!),
+                        ),
+                      ],
+                      if (_loadingRoutes) ...[
+                        const SizedBox(height: 14),
+                        const _RouteLoadingSkeleton(),
+                      ],
+                      if (_rankedRoutes.isNotEmpty) ...[
+                        const SizedBox(height: 26),
+                        Text(
+                          'Route choices',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          'Compared by app rules using your saved travel preferences.',
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                        const SizedBox(height: 12),
+                        for (final ranked in _rankedRoutes) ...[
+                          _RouteDecisionCard(
+                            ranked: ranked,
+                            selected:
+                                ranked.route.routeKey == _selectedRouteKey,
+                            onSelect: () => _selectRoute(ranked.route.routeKey),
+                            onHear: () => _hearRoute(ranked),
+                            onStart: () => _startJourney(ranked),
+                            onRequest: ranked.route.isRequestable
+                                ? () => _requestTransport(ranked)
+                                : null,
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                        OutlinedButton.icon(
+                          onPressed: () {
+                            setState(() => _showMap = !_showMap);
+                            if (_showMap) {
+                              WidgetsBinding.instance.addPostFrameCallback(
+                                (_) => _fitMap(),
+                              );
+                            }
+                          },
+                          icon: Icon(
+                            _showMap
+                                ? Icons.visibility_off_outlined
+                                : Icons.map_outlined,
+                          ),
+                          label: Text(
+                            _showMap ? 'Hide map' : 'Show map preview',
+                          ),
+                        ),
+                        if (_showMap) ...[
+                          const SizedBox(height: 12),
+                          _MapPreview(
+                            origin: _origin,
+                            destination: _destination,
+                            routes: [
+                              for (final ranked in _rankedRoutes) ranked.route,
+                            ],
+                            selectedRouteKey: _selectedRouteKey,
+                            onCreated: (controller) {
+                              _mapController = controller;
+                              unawaited(_fitMap());
+                            },
+                          ),
+                        ],
+                        const SizedBox(height: 12),
+                        const _WalkingSafetyNotice(),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -667,6 +862,7 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
 enum _LocationState {
   loading,
   ready,
+  outsideAccra,
   serviceOff,
   denied,
   deniedForever,
@@ -749,7 +945,7 @@ class _DestinationComposer extends StatelessWidget {
       onSubmitted: onSubmitted,
       decoration: InputDecoration(
         labelText: 'Destination',
-        hintText: 'Place, address, or category',
+        hintText: 'Accra place, landmark, or category',
         prefixIcon: const Icon(Icons.place_outlined),
         suffixIcon: Row(
           mainAxisSize: MainAxisSize.min,
@@ -811,6 +1007,12 @@ class _LocationIssue extends StatelessWidget {
         'Can’t find your location',
         'Move to an open area, then try again.',
         'Try again',
+      ),
+      _LocationState.outsideAccra => (
+        Icons.location_city_outlined,
+        'Outside the Accra pilot area',
+        'This demo plans journeys only when you and the destination are in Accra.',
+        'Check again',
       ),
       _LocationState.loading || _LocationState.ready => throw StateError(
         'Location issues are shown only when attention is needed.',
@@ -968,9 +1170,15 @@ class _SuggestionsCard extends StatelessWidget {
 }
 
 class _ConfirmedDestinationCard extends StatelessWidget {
-  const _ConfirmedDestinationCard({required this.destination});
+  const _ConfirmedDestinationCard({
+    required this.destination,
+    required this.saved,
+    required this.onToggleSaved,
+  });
 
   final JourneyPlace destination;
+  final bool saved;
+  final VoidCallback onToggleSaved;
 
   @override
   Widget build(BuildContext context) {
@@ -1014,6 +1222,13 @@ class _ConfirmedDestinationCard extends StatelessWidget {
                     ),
                   ],
                 ],
+              ),
+            ),
+            IconButton(
+              tooltip: saved ? 'Remove saved place' : 'Save place',
+              onPressed: onToggleSaved,
+              icon: Icon(
+                saved ? Icons.bookmark_rounded : Icons.bookmark_outline_rounded,
               ),
             ),
           ],
@@ -1174,6 +1389,7 @@ class _RouteDecisionCard extends StatelessWidget {
     required this.onSelect,
     required this.onHear,
     required this.onStart,
+    this.onRequest,
   });
 
   final RankedRoute ranked;
@@ -1181,6 +1397,7 @@ class _RouteDecisionCard extends StatelessWidget {
   final VoidCallback onSelect;
   final VoidCallback onHear;
   final VoidCallback onStart;
+  final VoidCallback? onRequest;
 
   @override
   Widget build(BuildContext context) {
@@ -1190,7 +1407,8 @@ class _RouteDecisionCard extends StatelessWidget {
       selected: selected,
       label:
           '${ranked.title}, ${route.mode.label}, ${route.durationLabel}, '
-          '${route.distanceLabel}. Step-free access data unavailable.',
+          '${route.distanceLabel}. ${route.source.name} evidence. '
+          'Step-free access data unavailable.',
       child: Card(
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(20),
@@ -1242,7 +1460,7 @@ class _RouteDecisionCard extends StatelessWidget {
                           ),
                           const SizedBox(height: 3),
                           Text(
-                            route.mode.label,
+                            route.displayMode,
                             style: Theme.of(context).textTheme.bodyMedium,
                           ),
                         ],
@@ -1279,6 +1497,16 @@ class _RouteDecisionCard extends StatelessWidget {
                         icon: Icons.multiple_stop_rounded,
                         label: '${route.transfers} transfers',
                       ),
+                    if (route.waitingLabel != null)
+                      _MetricChip(
+                        icon: Icons.hourglass_bottom_rounded,
+                        label: route.waitingLabel!,
+                      ),
+                    if (route.fareLabel != null)
+                      _MetricChip(
+                        icon: Icons.payments_outlined,
+                        label: route.fareLabel!,
+                      ),
                   ],
                 ),
                 const SizedBox(height: 13),
@@ -1286,6 +1514,29 @@ class _RouteDecisionCard extends StatelessWidget {
                   ranked.explanation,
                   style: Theme.of(context).textTheme.bodyLarge,
                 ),
+                if (route.serviceStatus != null) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    route.serviceStatus!,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                ],
+                if (route.source != JourneyEvidenceSource.live) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: scheme.secondaryContainer,
+                      borderRadius: BorderRadius.circular(13),
+                    ),
+                    child: Text(
+                      route.source == JourneyEvidenceSource.simulated
+                          ? 'SIMULATED PROVIDER DATA · not live commercial availability'
+                          : 'OFFLINE SAVED ROUTE · conditions may have changed',
+                      style: Theme.of(context).textTheme.labelLarge,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 Container(
                   padding: const EdgeInsets.all(12),
@@ -1317,6 +1568,12 @@ class _RouteDecisionCard extends StatelessWidget {
                       icon: const Icon(Icons.navigation_rounded),
                       label: const Text('Start'),
                     ),
+                    if (onRequest != null)
+                      ElevatedButton.icon(
+                        onPressed: onRequest,
+                        icon: const Icon(Icons.local_taxi_outlined),
+                        label: const Text('Request'),
+                      ),
                     OutlinedButton.icon(
                       onPressed: onHear,
                       icon: const Icon(Icons.volume_up_outlined),
@@ -1364,14 +1621,14 @@ class _MapPreview extends StatelessWidget {
     required this.origin,
     required this.destination,
     required this.routes,
-    required this.selectedMode,
+    required this.selectedRouteKey,
     required this.onCreated,
   });
 
   final LatLng? origin;
   final JourneyPlace? destination;
   final List<JourneyRouteOption> routes;
-  final JourneyTravelMode? selectedMode;
+  final String? selectedRouteKey;
   final ValueChanged<GoogleMapController> onCreated;
 
   @override
@@ -1387,11 +1644,11 @@ class _MapPreview extends StatelessWidget {
           child: GoogleMap(
             initialCameraPosition: CameraPosition(
               target:
-                  destination?.location ??
-                  origin ??
-                  _JourneyPlannerScreenState._accra,
+                  destination?.location ?? origin ?? AccraOperatingArea.center,
               zoom: 13,
             ),
+            cameraTargetBounds: CameraTargetBounds(AccraOperatingArea.bounds),
+            minMaxZoomPreference: const MinMaxZoomPreference(10, 20),
             myLocationEnabled: origin != null,
             myLocationButtonEnabled: false,
             mapToolbarEnabled: false,
@@ -1408,13 +1665,13 @@ class _MapPreview extends StatelessWidget {
             polylines: {
               for (final route in routes)
                 Polyline(
-                  polylineId: PolylineId(route.mode.name),
+                  polylineId: PolylineId(route.routeKey),
                   points: route.path,
-                  color: route.mode == selectedMode
+                  color: route.routeKey == selectedRouteKey
                       ? scheme.primary
                       : scheme.outline.withValues(alpha: 0.7),
-                  width: route.mode == selectedMode ? 7 : 4,
-                  zIndex: route.mode == selectedMode ? 2 : 1,
+                  width: route.routeKey == selectedRouteKey ? 7 : 4,
+                  zIndex: route.routeKey == selectedRouteKey ? 2 : 1,
                 ),
             },
             onMapCreated: onCreated,
@@ -1443,7 +1700,8 @@ class _WalkingSafetyNotice extends StatelessWidget {
           const SizedBox(width: 11),
           Expanded(
             child: Text(
-              'Walking routes may not include clear sidewalks or pedestrian paths. '
+              'Walking, bicycling, and two-wheeled routes are beta and may not '
+              'include clear sidewalks, pedestrian paths, or bicycling paths. '
               'Check actual conditions and follow local rules.',
               style: Theme.of(context).textTheme.bodyMedium,
             ),

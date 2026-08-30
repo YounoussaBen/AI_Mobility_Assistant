@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="talk"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_talk_short"
+        android:shortcutLongLabel="@string/shortcut_talk_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="ai-mobility:///talk"
+            android:targetPackage="com.aimobility.ai_mobility_assistant"
+            android:targetClass="com.aimobility.ai_mobility_assistant.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="guidance"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_guidance_short"
+        android:shortcutLongLabel="@string/shortcut_guidance_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="ai-mobility:///guidance"
+            android:targetPackage="com.aimobility.ai_mobility_assistant"
+            android:targetClass="com.aimobility.ai_mobility_assistant.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="lens"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_lens_short"
+        android:shortcutLongLabel="@string/shortcut_lens_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:data="ai-mobility:///lens"
+            android:targetPackage="com.aimobility.ai_mobility_assistant"
+            android:targetClass="com.aimobility.ai_mobility_assistant.MainActivity" />
+    </shortcut>
+</shortcuts>

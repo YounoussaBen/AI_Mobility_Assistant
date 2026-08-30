@@ -66,4 +66,38 @@ void main() {
 
     expect(ranked.first.route.mode, JourneyTravelMode.walking);
   });
+
+  test('affordable priority uses fare evidence and not missing prices', () {
+    const routes = [
+      JourneyRouteOption(
+        mode: JourneyTravelMode.transit,
+        duration: Duration(minutes: 20),
+        distanceMeters: 5000,
+        path: [],
+        fareMinorUnits: 650,
+        currencyCode: 'GHS',
+      ),
+      JourneyRouteOption(
+        mode: JourneyTravelMode.onDemand,
+        duration: Duration(minutes: 12),
+        distanceMeters: 5000,
+        path: [],
+        fareMinorUnits: 2400,
+        currencyCode: 'GHS',
+      ),
+      JourneyRouteOption(
+        mode: JourneyTravelMode.walking,
+        duration: Duration(minutes: 50),
+        distanceMeters: 5000,
+        path: [],
+      ),
+    ];
+
+    final ranked = RouteRanker.rank(
+      routes,
+      const MobilityPreferences(priority: JourneyPriority.affordable),
+    );
+
+    expect(ranked.first.route.mode, JourneyTravelMode.transit);
+  });
 }
