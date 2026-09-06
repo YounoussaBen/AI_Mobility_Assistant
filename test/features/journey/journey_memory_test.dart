@@ -9,6 +9,20 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 void main() {
+  test('old simulated journey is not resumed with stale instructions', () {
+    final restored = JourneySessionState.fromJson({
+      'phase': 'guiding',
+      'lastInstruction': 'Walk to a simulated pickup',
+      'currentStepIndex': 3,
+      'routes': [
+        {'source': 'simulated', 'mode': 'onDemand'},
+      ],
+    });
+    expect(restored.hasActiveJourney, isFalse);
+    expect(restored.routes, isEmpty);
+    expect(restored.lastInstruction, isNull);
+    expect(restored.currentStepIndex, 0);
+  });
   const destination = JourneyPlace(
     placeId: 'memory-place',
     name: 'Memory destination',

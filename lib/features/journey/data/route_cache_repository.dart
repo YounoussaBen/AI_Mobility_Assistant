@@ -43,7 +43,8 @@ class RouteCacheRepository {
       final parsed = <JourneyRouteOption>[];
       for (final rawRoute in routes.whereType<Map<String, dynamic>>()) {
         final route = JourneyRouteOption.fromJson(rawRoute);
-        if (route.path.isEmpty ||
+        if (route.isSimulated ||
+            route.path.isEmpty ||
             !AccraOperatingArea.containsRoute(route.path)) {
           continue;
         }
@@ -69,6 +70,7 @@ class RouteCacheRepository {
         !AccraOperatingArea.contains(destination) ||
         routes.any(
           (route) =>
+              route.isSimulated ||
               route.path.isEmpty ||
               !AccraOperatingArea.containsRoute(route.path),
         )) {

@@ -215,7 +215,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         } else {
           _respond(
             'I’ll refresh transport choices for ${current.destination!.name}. '
-            'Prototype provider results are clearly marked as simulated.',
+            'I’ll compare available public transport and car routes. You arrange any taxi separately.',
             tool: true,
           );
           context.push(
@@ -297,7 +297,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       return '${route.displayMode}: ${route.durationLabel}, '
           '${route.distanceLabel}, fare ${route.fareLabel ?? 'unknown'}, '
           'wait ${route.waitingLabel ?? 'unknown'}, transfers '
-          '${route.transfers?.toString() ?? 'unknown'}, $evidence evidence';
+          '${route.transfers?.toString() ?? 'unknown'}, $evidence evidence. '
+          '${route.connectionSummary}';
     }
 
     return CompanionContext(

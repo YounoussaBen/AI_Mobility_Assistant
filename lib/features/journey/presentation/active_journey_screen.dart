@@ -377,7 +377,8 @@ class _ActiveJourneyScreenState extends ConsumerState<ActiveJourneyScreen> {
       return '${route.displayMode}: ${route.durationLabel}, '
           '${route.distanceLabel}, fare ${route.fareLabel ?? 'unknown'}, '
           'wait ${route.waitingLabel ?? 'unknown'}, transfers '
-          '${route.transfers?.toString() ?? 'unknown'}, $evidence evidence';
+          '${route.transfers?.toString() ?? 'unknown'}, $evidence evidence. '
+          '${route.connectionSummary}';
     }
 
     return CompanionContext(

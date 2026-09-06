@@ -10,6 +10,7 @@ void main() {
       await SharedPreferences.getInstance(),
     );
     const profile = VoiceProfile(
+      speechEnabled: false,
       voiceName: 'Test voice',
       voiceLocale: 'en-GH',
       speechRate: 0.42,
@@ -24,6 +25,7 @@ void main() {
     await repository.save(profile);
     final restored = await repository.load();
 
+    expect(restored.speechEnabled, isFalse);
     expect(restored.voiceName, 'Test voice');
     expect(restored.voiceLocale, 'en-GH');
     expect(restored.speechRate, 0.42);
@@ -34,4 +36,13 @@ void main() {
     expect(restored.captions, isFalse);
     expect(restored.systemVoiceFallback, isFalse);
   });
+
+  test(
+    'speech remains enabled for profiles saved before the setting existed',
+    () {
+      final restored = VoiceProfile.fromJson(const {});
+
+      expect(restored.speechEnabled, isTrue);
+    },
+  );
 }

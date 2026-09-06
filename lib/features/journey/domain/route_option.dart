@@ -144,6 +144,55 @@ class JourneyRouteOption {
 
   bool get isSimulated => source == JourneyEvidenceSource.simulated;
 
+  int? get accessWalkMeters => steps.isEmpty || walkingDistanceMeters == null
+      ? null
+      : steps
+            .takeWhile((step) => step.travelMode == JourneyTravelMode.walking)
+            .fold<int>(0, (total, step) => total + step.distanceMeters);
+
+  int? get egressWalkMeters => steps.isEmpty || walkingDistanceMeters == null
+      ? null
+      : steps.reversed
+            .takeWhile((step) => step.travelMode == JourneyTravelMode.walking)
+            .fold<int>(0, (total, step) => total + step.distanceMeters);
+
+  String get connectionSummary {
+    if (mode == JourneyTravelMode.walking) {
+      return 'Walk the full $distanceLabel to your destination ($durationLabel).';
+    }
+    final firstWalk = accessWalkMeters;
+    final lastWalk = egressWalkMeters;
+    final parts = <String>[];
+    if (firstWalk != null && firstWalk > 0) {
+      parts.add(
+        'Walk $firstWalk m to ${mode == JourneyTravelMode.transit ? 'the boarding point' : 'the road pickup point'}.',
+      );
+    }
+    parts.add(
+      mode == JourneyTravelMode.transit
+          ? 'Take the provider-listed public transport${transfers == null
+                ? ''
+                : transfers == 0
+                ? ' with no changes'
+                : ' with $transfers change${transfers == 1 ? '' : 's'}'}.'
+          : mode == JourneyTravelMode.driving
+          ? 'Travel by car; arrange your own vehicle or taxi.'
+          : 'Continue by ${mode.label.toLowerCase()}.',
+    );
+    if (lastWalk != null && lastWalk > 0) {
+      parts.add('Then walk $lastWalk m to your destination.');
+    }
+    if (mode == JourneyTravelMode.driving && walkingDistanceMeters == null) {
+      parts.add('Walking access at pickup and drop-off is unconfirmed.');
+    }
+    if (mode == JourneyTravelMode.transit) {
+      parts.add(
+        'Confirm the destination with the driver or mate before boarding.',
+      );
+    }
+    return parts.join(' ');
+  }
+
   JourneyStep? get firstStep => steps.firstOrNull;
 
   String get durationLabel {

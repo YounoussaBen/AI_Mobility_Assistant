@@ -20,6 +20,13 @@ abstract final class RouteRanker {
     List<JourneyRouteOption> routes,
     MobilityPreferences preferences,
   ) {
+    routes = routes
+        .where(
+          (route) =>
+              !route.isSimulated &&
+              route.availability != RouteAvailability.unavailable,
+        )
+        .toList();
     if (routes.isEmpty) return const [];
 
     final sorted = [
@@ -69,7 +76,6 @@ abstract final class RouteRanker {
     if (preferences.fewerTransfers) {
       score += (route.transfers ?? 0) * 18;
     }
-    if (route.availability == RouteAvailability.unavailable) score += 10000;
     if (route.availability == RouteAvailability.limited) score += 4;
     if (preferences.wheelchairAccess &&
         route.displayMode.toLowerCase().contains('wheelchair')) {
@@ -111,19 +117,18 @@ abstract final class RouteRanker {
     if (recommended &&
         preferences.priority == JourneyPriority.affordable &&
         route.fareLabel != null) {
-      return 'Lowest provider-supplied or clearly simulated fare among the '
+      return 'Lowest provider-supplied fare among the '
           'options with price evidence.';
     }
     if (recommended &&
         preferences.wheelchairAccess &&
         route.displayMode.toLowerCase().contains('wheelchair')) {
       return 'Best match for your wheelchair-access preference in the '
-          'clearly labelled provider scenario.';
+          'provider details. Confirm access before travelling.';
     }
     if (route == fastest) {
       return 'Fastest option returned by the route provider right now.';
     }
-    return '${route.durationLabel} and ${route.distanceLabel} using '
-        '${route.mode.label.toLowerCase()}.';
+    return route.connectionSummary;
   }
 }

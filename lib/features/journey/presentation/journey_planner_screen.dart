@@ -21,6 +21,7 @@ import '../../voice/application/voice_profile_controller.dart';
 import '../../voice/data/accra_speech_locale.dart';
 import '../application/journey_session_controller.dart';
 import '../data/gemini_destination_service.dart';
+import '../data/gemini_route_advisor.dart';
 import '../data/google_places_service.dart';
 import '../data/google_routes_service.dart';
 import '../data/route_cache_repository.dart';
@@ -57,6 +58,8 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
   late final GooglePlacesService _places;
   late final GoogleRoutesService _routesService;
   late final GeminiDestinationService _gemini;
+  late final GeminiRouteAdvisor _routeAdvisor;
+  bool _aiCompared = false;
   final _speech = SpeechToText();
   final _searchController = TextEditingController();
   final _searchFocus = FocusNode();
@@ -95,6 +98,12 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
       cacheRepository: ref.read(routeCacheRepositoryProvider),
     );
     _gemini = GeminiDestinationService(
+      apiKey: AppConfig.geminiApiKey,
+      model: AppConfig.geminiModel,
+      backendUrl: AppConfig.companionBackendUrl,
+      accessToken: ref.read(authRepositoryProvider).idToken,
+    );
+    _routeAdvisor = GeminiRouteAdvisor(
       apiKey: AppConfig.geminiApiKey,
       model: AppConfig.geminiModel,
       backendUrl: AppConfig.companionBackendUrl,
@@ -348,49 +357,74 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
           .setPhase(CompanionPhase.checkingRoutes);
     }
 
-    final googleRoutes = await _routesService.routes(
-      origin: origin,
-      destination: destination.location,
-    );
-    if (!mounted) return;
-    final transportRoutes = await ref
-        .read(transportAvailabilityServiceProvider)
-        .search(
-          origin: origin,
-          destination: destination.location,
-          baseRoutes: googleRoutes,
-        );
-    if (!mounted) return;
-    final routes = [
-      if (!widget.transportOnly) ...googleRoutes,
-      ...transportRoutes,
-    ];
-    final preferences =
-        ref.read(mobilityPreferencesControllerProvider).value ??
-        const MobilityPreferences();
-    final ranked = RouteRanker.rank(routes, preferences);
-    final selected = ranked.firstOrNull?.route.routeKey;
-    setState(() {
-      _loadingRoutes = false;
-      _rankedRoutes = ranked;
-      _selectedRouteKey = selected;
-      _message = ranked.isEmpty
-          ? AppConfig.googleMapsWebServiceApiKey.isEmpty &&
-                    AppConfig.companionBackendUrl.isEmpty
-                ? 'Route comparison needs a configured Maps web-service connection.'
-                : 'No verified route options are available right now.'
-          : ranked.any(
-              (item) => item.route.source == JourneyEvidenceSource.cached,
-            )
-          ? 'Using an offline route saved on this device. Conditions may have changed.'
-          : null;
-    });
-    final controller = ref.read(journeySessionControllerProvider.notifier);
-    if (!widget.reroute) {
-      controller.routesReady([
-        for (final rankedRoute in ranked) rankedRoute.route,
-      ], preferredRouteKey: selected);
-      if (selected != null) controller.selectRouteByKey(selected);
+    try {
+      final googleRoutes = await _routesService.routes(
+        origin: origin,
+        destination: destination.location,
+      );
+      if (!mounted) return;
+      final transportRoutes = await ref
+          .read(transportAvailabilityServiceProvider)
+          .search(
+            origin: origin,
+            destination: destination.location,
+            baseRoutes: googleRoutes,
+          );
+      if (!mounted) return;
+      final routes = widget.transportOnly ? transportRoutes : googleRoutes;
+      final preferences =
+          ref.read(mobilityPreferencesControllerProvider).value ??
+          const MobilityPreferences();
+      final advice = await _routeAdvisor.compare(
+        origin: origin,
+        destinationName: destination.name,
+        destination: destination.location,
+        routes: routes,
+        preferences: preferences,
+      );
+      if (!mounted) return;
+      // A destination/location change during network work must not install an old route.
+      if (_destination?.placeId != destination.placeId || _origin != origin) {
+        setState(() => _loadingRoutes = false);
+        unawaited(_loadRoutes());
+        return;
+      }
+      final ranked = advice.routes;
+      final selected = ranked.firstOrNull?.route.routeKey;
+      setState(() {
+        _loadingRoutes = false;
+        _rankedRoutes = ranked;
+        _aiCompared = advice.aiCompared;
+        _selectedRouteKey = selected;
+        _message = ranked.isEmpty
+            ? AppConfig.googleMapsWebServiceApiKey.isEmpty &&
+                      AppConfig.companionBackendUrl.isEmpty
+                  ? 'Route comparison needs a configured Maps web-service connection.'
+                  : 'No verified route options are available right now.'
+            : ranked.any(
+                (item) => item.route.source == JourneyEvidenceSource.cached,
+              )
+            ? 'Using an offline route saved on this device. Conditions may have changed.'
+            : null;
+      });
+      final controller = ref.read(journeySessionControllerProvider.notifier);
+      if (!widget.reroute) {
+        controller.routesReady([
+          for (final rankedRoute in ranked) rankedRoute.route,
+        ], preferredRouteKey: selected);
+        if (selected != null) controller.selectRouteByKey(selected);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loadingRoutes = false;
+        _message = 'Routes could not be checked. Please try again.';
+      });
+      if (!widget.reroute) {
+        ref
+            .read(journeySessionControllerProvider.notifier)
+            .setPhase(CompanionPhase.error);
+      }
     }
   }
 
@@ -590,42 +624,6 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
     context.pop();
   }
 
-  Future<void> _requestTransport(RankedRoute ranked) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Submit prototype request?'),
-        content: Text(
-          '${ranked.route.displayMode}\n\n'
-          '${ranked.route.waitingLabel ?? 'Waiting time unknown'} · '
-          '${ranked.route.fareLabel ?? 'Fare unknown'}\n\n'
-          'This provider is simulated for evaluation. No real vehicle will be dispatched.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Submit simulated request'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    final request = await ref
-        .read(transportAvailabilityServiceProvider)
-        .request(ranked.route);
-    if (!mounted) return;
-    ref
-        .read(journeySessionControllerProvider.notifier)
-        .addTurn(AssistantSpeaker.companion, request.message, tool: true);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${request.message} Reference ${request.id}.')),
-    );
-  }
-
   Future<void> _fitMap() async {
     final controller = _mapController;
     final route = _rankedRoutes
@@ -795,7 +793,9 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
                         ),
                         const SizedBox(height: 5),
                         Text(
-                          'Compared by app rules using your saved travel preferences.',
+                          _aiCompared
+                              ? 'AI compared the walking connections, transport and your preferences.'
+                              : 'Compared using route evidence and your preferences. AI comparison is unavailable.',
                           style: Theme.of(context).textTheme.bodyMedium,
                         ),
                         const SizedBox(height: 12),
@@ -807,9 +807,6 @@ class _JourneyPlannerScreenState extends ConsumerState<JourneyPlannerScreen>
                             onSelect: () => _selectRoute(ranked.route.routeKey),
                             onHear: () => _hearRoute(ranked),
                             onStart: () => _startJourney(ranked),
-                            onRequest: ranked.route.isRequestable
-                                ? () => _requestTransport(ranked)
-                                : null,
                           ),
                           const SizedBox(height: 12),
                         ],
@@ -1020,7 +1017,7 @@ class _LocationIssue extends StatelessWidget {
       _LocationState.outsideAccra => (
         Icons.location_city_outlined,
         'Outside the Accra pilot area',
-        'This demo plans journeys only when you and the destination are in Accra.',
+        'Choose a journey within Accra.',
         'Check again',
       ),
       _LocationState.loading || _LocationState.ready => throw StateError(
@@ -1398,7 +1395,6 @@ class _RouteDecisionCard extends StatelessWidget {
     required this.onSelect,
     required this.onHear,
     required this.onStart,
-    this.onRequest,
   });
 
   final RankedRoute ranked;
@@ -1406,220 +1402,101 @@ class _RouteDecisionCard extends StatelessWidget {
   final VoidCallback onSelect;
   final VoidCallback onHear;
   final VoidCallback onStart;
-  final VoidCallback? onRequest;
 
   @override
   Widget build(BuildContext context) {
     final route = ranked.route;
     final scheme = Theme.of(context).colorScheme;
-    return Semantics(
-      selected: selected,
-      label:
-          '${ranked.title}, ${route.mode.label}, ${route.durationLabel}, '
-          '${route.distanceLabel}. ${route.source.name} evidence. '
-          'Step-free access data unavailable.',
-      child: Card(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
-          side: BorderSide(
-            color: selected ? scheme.primary : scheme.outlineVariant,
-            width: selected ? 2 : 1,
-          ),
+    return Card(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(
+          color: selected ? scheme.primary : scheme.outlineVariant,
+          width: selected ? 2 : 1,
         ),
-        child: InkWell(
-          onTap: onSelect,
-          child: Padding(
-            padding: const EdgeInsets.all(18),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        color: scheme.primaryContainer,
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: Icon(route.mode.icon, color: scheme.primary),
-                    ),
-                    const SizedBox(width: 13),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (ranked.isRecommended)
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 3),
-                              child: Text(
-                                'RECOMMENDED',
-                                style: Theme.of(context).textTheme.labelLarge
-                                    ?.copyWith(
-                                      color: scheme.primary,
-                                      fontSize: 12,
-                                      letterSpacing: 0.5,
-                                    ),
-                              ),
-                            ),
-                          Text(
-                            ranked.title,
-                            style: Theme.of(context).textTheme.titleLarge,
-                          ),
-                          const SizedBox(height: 3),
-                          Text(
-                            route.displayMode,
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
-                        ],
-                      ),
-                    ),
-                    Icon(
-                      selected
-                          ? Icons.check_circle_rounded
-                          : Icons.circle_outlined,
-                      color: selected ? scheme.primary : scheme.outline,
-                    ),
-                  ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Semantics(
+              selected: selected,
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                onTap: onSelect,
+                leading: Icon(route.mode.icon, color: scheme.primary),
+                title: Text(route.displayMode),
+                subtitle: Text(
+                  '${ranked.isRecommended ? 'Suggested · ' : ''}${route.durationLabel} · ${route.distanceLabel}',
                 ),
-                const SizedBox(height: 14),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    _MetricChip(
-                      icon: Icons.schedule_rounded,
-                      label: route.durationLabel,
-                    ),
-                    _MetricChip(
-                      icon: Icons.straighten_rounded,
-                      label: route.distanceLabel,
-                    ),
-                    if (route.walkingDistanceMeters != null)
-                      _MetricChip(
-                        icon: Icons.directions_walk_rounded,
-                        label: '${route.walkingDistanceMeters} m walking',
-                      ),
-                    if (route.transfers != null)
-                      _MetricChip(
-                        icon: Icons.multiple_stop_rounded,
-                        label: '${route.transfers} transfers',
-                      ),
-                    if (route.waitingLabel != null)
-                      _MetricChip(
-                        icon: Icons.hourglass_bottom_rounded,
-                        label: route.waitingLabel!,
-                      ),
-                    if (route.fareLabel != null)
-                      _MetricChip(
-                        icon: Icons.payments_outlined,
-                        label: route.fareLabel!,
-                      ),
-                  ],
+                trailing: Icon(
+                  selected ? Icons.check_circle_rounded : Icons.circle_outlined,
+                  color: selected ? scheme.primary : scheme.outline,
                 ),
-                const SizedBox(height: 13),
-                Text(
-                  ranked.explanation,
-                  style: Theme.of(context).textTheme.bodyLarge,
-                ),
-                if (route.serviceStatus != null) ...[
-                  const SizedBox(height: 10),
-                  Text(
-                    route.serviceStatus!,
-                    style: Theme.of(context).textTheme.bodyMedium,
-                  ),
-                ],
-                if (route.source != JourneyEvidenceSource.live) ...[
-                  const SizedBox(height: 10),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: scheme.secondaryContainer,
-                      borderRadius: BorderRadius.circular(13),
-                    ),
-                    child: Text(
-                      route.source == JourneyEvidenceSource.simulated
-                          ? 'SIMULATED PROVIDER DATA · not live commercial availability'
-                          : 'OFFLINE SAVED ROUTE · conditions may have changed',
-                      style: Theme.of(context).textTheme.labelLarge,
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: scheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(13),
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Icon(Icons.help_outline_rounded, size: 20),
-                      const SizedBox(width: 9),
-                      Expanded(
-                        child: Text(
-                          'Step-free access data is unavailable. This route is not labelled accessible.',
-                          style: Theme.of(context).textTheme.bodyMedium,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 15),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
-                  children: [
-                    ElevatedButton.icon(
-                      onPressed: onStart,
-                      icon: const Icon(Icons.navigation_rounded),
-                      label: const Text('Start'),
-                    ),
-                    if (onRequest != null)
-                      ElevatedButton.icon(
-                        onPressed: onRequest,
-                        icon: const Icon(Icons.local_taxi_outlined),
-                        label: const Text('Request'),
-                      ),
-                    OutlinedButton.icon(
-                      onPressed: onHear,
-                      icon: const Icon(Icons.volume_up_outlined),
-                      label: const Text('Hear details'),
-                    ),
-                  ],
-                ),
-              ],
+              ),
             ),
-          ),
+            if (selected) ...[
+              const SizedBox(height: 8),
+              Text(
+                route.connectionSummary,
+                style: Theme.of(context).textTheme.bodyLarge,
+              ),
+              if (route.source == JourneyEvidenceSource.cached)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text(
+                    'Saved offline route · conditions may have changed.',
+                  ),
+                ),
+              ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                title: const Text('Journey details'),
+                children: [
+                  for (final step in route.steps)
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(step.travelMode.icon),
+                      title: Text(step.instruction),
+                      subtitle: Text(step.distanceLabel),
+                    ),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      [
+                        ranked.explanation,
+                        if (route.walkingDistanceMeters != null)
+                          '${route.walkingDistanceMeters} m total walking.',
+                        if (route.mode != JourneyTravelMode.walking)
+                          'Fare: ${route.fareLabel ?? 'not provided'}. Waiting time: ${route.waitingLabel ?? 'not provided'}.',
+                        if (route.serviceStatus != null) route.serviceStatus!,
+                        'Step-free access has not been verified.',
+                      ].join(' '),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: onStart,
+                    icon: const Icon(Icons.navigation_rounded),
+                    label: const Text('Start journey'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: onHear,
+                    icon: const Icon(Icons.volume_up_outlined),
+                    label: const Text('Hear details'),
+                  ),
+                ],
+              ),
+            ],
+          ],
         ),
-      ),
-    );
-  }
-}
-
-class _MetricChip extends StatelessWidget {
-  const _MetricChip({required this.icon, required this.label});
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
-      decoration: BoxDecoration(
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 17),
-          const SizedBox(width: 6),
-          Text(label, style: Theme.of(context).textTheme.bodyMedium),
-        ],
       ),
     );
   }

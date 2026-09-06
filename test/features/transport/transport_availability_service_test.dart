@@ -1,36 +1,48 @@
-import 'package:ai_mobility_assistant/app/storage/app_storage.dart';
 import 'package:ai_mobility_assistant/features/journey/domain/route_option.dart';
 import 'package:ai_mobility_assistant/features/transport/data/transport_availability_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 void main() {
+  const origin = LatLng(5.60, -0.18);
+  const destination = LatLng(5.64, -0.15);
+  final service = TransportAvailabilityService();
   test(
-    'prototype provider options and requests are unmistakably simulated',
+    'missing transport evidence produces no invented vehicles or routes',
     () async {
-      final service = SimulatedTransportAvailabilityService(MemoryAppStorage());
-      final routes = await service.search(
-        origin: const LatLng(5.60, -0.18),
-        destination: const LatLng(5.64, -0.15),
-        baseRoutes: const [],
-      );
-
       expect(
-        routes.where((route) => route.mode == JourneyTravelMode.onDemand),
-        hasLength(2),
-      );
-      expect(
-        routes.every(
-          (route) => route.source == JourneyEvidenceSource.simulated,
+        await service.search(
+          origin: origin,
+          destination: destination,
+          baseRoutes: [],
         ),
-        isTrue,
+        isEmpty,
       );
-      expect(routes.every((route) => route.fareMinorUnits != null), isTrue);
-      expect(routes.every((route) => route.waitingTime != null), isTrue);
-
-      final request = await service.request(routes.first);
-      expect(request.simulated, isTrue);
-      expect(request.message, contains('No real vehicle'));
+    },
+  );
+  test(
+    'returns only actual car/transit routes without invented price or wait',
+    () async {
+      const car = JourneyRouteOption(
+        mode: JourneyTravelMode.driving,
+        duration: Duration(minutes: 12),
+        distanceMeters: 5000,
+        path: [origin, destination],
+      );
+      final result = await service.search(
+        origin: origin,
+        destination: destination,
+        baseRoutes: [
+          car,
+          car.copyWith(source: JourneyEvidenceSource.simulated),
+          car.copyWith(mode: JourneyTravelMode.walking),
+          car.copyWith(availability: RouteAvailability.unavailable),
+        ],
+      );
+      expect(result, [car]);
+      expect(result.single.fareMinorUnits, isNull);
+      expect(result.single.waitingTime, isNull);
+      expect(result.single.isRequestable, isFalse);
     },
   );
 }

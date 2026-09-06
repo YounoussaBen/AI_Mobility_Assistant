@@ -28,7 +28,7 @@ class JourneyHistoryRepository {
       return [
         for (final item in items.whereType<Map<String, dynamic>>())
           JourneyRecord.fromJson(item),
-      ];
+      ].where((record) => !record.route.isSimulated).toList();
     } catch (_) {
       return const [];
     }

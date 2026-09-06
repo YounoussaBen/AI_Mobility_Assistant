@@ -4,7 +4,9 @@ import '../../voice/data/speech_output_service.dart';
 import '../../voice/domain/voice_profile.dart';
 import '../domain/companion_models.dart';
 
-final responsePriorityServiceProvider = Provider<ResponsePriorityService>((ref) {
+final responsePriorityServiceProvider = Provider<ResponsePriorityService>((
+  ref,
+) {
   return ResponsePriorityService(ref.watch(speechOutputServiceProvider));
 });
 
@@ -20,6 +22,7 @@ class ResponsePriorityService {
     VoiceProfile profile, {
     required ResponsePriority priority,
   }) async {
+    if (!profile.speechEnabled) return false;
     final active = _activePriority;
     if (active != null &&
         !ResponsePriorityManager.mayInterrupt(

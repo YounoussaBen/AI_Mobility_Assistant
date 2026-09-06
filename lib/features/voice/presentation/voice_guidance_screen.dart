@@ -67,6 +67,13 @@ class _VoiceGuidanceScreenState extends ConsumerState<VoiceGuidanceScreen> {
     }
   }
 
+  void _setSpeechEnabled(bool enabled) {
+    if (!enabled) {
+      unawaited(ref.read(speechOutputServiceProvider).setSpeechEnabled(false));
+    }
+    setState(() => _draft = _draft?.copyWith(speechEnabled: enabled));
+  }
+
   Future<void> _save() async {
     final profile = _draft;
     if (profile == null || _saving) return;
@@ -107,6 +114,7 @@ class _VoiceGuidanceScreenState extends ConsumerState<VoiceGuidanceScreen> {
               voiceError: _voiceError,
               saving: _saving,
               onChanged: (value) => setState(() => _draft = value),
+              onSpeechEnabledChanged: _setSpeechEnabled,
               onPlaySample: _playSample,
               onReloadVoices: _loadVoices,
               onSave: _save,
@@ -126,6 +134,7 @@ class _VoiceEditor extends StatelessWidget {
     required this.voiceError,
     required this.saving,
     required this.onChanged,
+    required this.onSpeechEnabledChanged,
     required this.onPlaySample,
     required this.onReloadVoices,
     required this.onSave,
@@ -137,6 +146,7 @@ class _VoiceEditor extends StatelessWidget {
   final String? voiceError;
   final bool saving;
   final ValueChanged<VoiceProfile> onChanged;
+  final ValueChanged<bool> onSpeechEnabledChanged;
   final VoidCallback onPlaySample;
   final VoidCallback onReloadVoices;
   final VoidCallback onSave;
@@ -262,7 +272,9 @@ class _VoiceEditor extends StatelessWidget {
                       ],
                       const SizedBox(height: 14),
                       OutlinedButton.icon(
-                        onPressed: loadingVoices ? null : onPlaySample,
+                        onPressed: loadingVoices || !profile.speechEnabled
+                            ? null
+                            : onPlaySample,
                         icon: const Icon(Icons.play_arrow_rounded),
                         label: const Text('Play sample'),
                       ),
@@ -275,6 +287,14 @@ class _VoiceEditor extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      _PreferenceSwitch(
+                        title: 'Spoken guidance',
+                        subtitle:
+                            'Read route guidance, warnings, and assistant responses aloud',
+                        value: profile.speechEnabled,
+                        onChanged: onSpeechEnabledChanged,
+                      ),
+                      const SizedBox(height: 10),
                       Row(
                         children: [
                           Expanded(

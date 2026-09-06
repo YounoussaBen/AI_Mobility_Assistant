@@ -9,6 +9,7 @@ import 'package:ultralytics_yolo/ultralytics_yolo.dart';
 
 import '../../companion/application/response_priority_service.dart';
 import '../../companion/domain/companion_models.dart';
+import '../../preferences/application/mobility_preferences_controller.dart';
 import '../../voice/application/voice_profile_controller.dart';
 
 class LookAheadScreen extends StatelessWidget {
@@ -49,7 +50,8 @@ class JourneyLensView extends ConsumerStatefulWidget {
   ConsumerState<JourneyLensView> createState() => _JourneyLensViewState();
 }
 
-class _JourneyLensViewState extends ConsumerState<JourneyLensView> {
+class _JourneyLensViewState extends ConsumerState<JourneyLensView>
+    with WidgetsBindingObserver {
   static const _supportedClasses = {
     'person',
     'bicycle',
@@ -66,7 +68,8 @@ class _JourneyLensViewState extends ConsumerState<JourneyLensView> {
   bool _modelReady = false;
   bool _requestingPermission = false;
   bool _permissionBlocked = false;
-  bool _autoDescribe = false;
+  bool _autoDescribe = true;
+  bool _speechPreferenceReady = false;
   bool _torchEnabled = false;
   String? _introMessage;
   String _observation =
@@ -76,13 +79,18 @@ class _JourneyLensViewState extends ConsumerState<JourneyLensView> {
   DateTime _lastSpokenUpdate = DateTime.fromMillisecondsSinceEpoch(0);
   String? _candidateKey;
   String? _lastAnnouncedKey;
+  String? _lastFeedbackKey;
+  String? _announcingKey;
   int _candidateFrames = 0;
+  Timer? _staleResultsTimer;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _cameraController = YOLOViewController();
-    unawaited(_cameraController.setShowOverlays(false));
+    unawaited(_cameraController.setShowOverlays(true));
+    unawaited(_loadSpeechPreference());
     if (widget.autoStart) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) unawaited(_startScan());
@@ -92,8 +100,34 @@ class _JourneyLensViewState extends ConsumerState<JourneyLensView> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _staleResultsTimer?.cancel();
     _cameraController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_scanning && state != AppLifecycleState.resumed) {
+      _stopScan(message: 'Journey Lens paused.');
+    }
+  }
+
+  Future<void> _loadSpeechPreference() async {
+    try {
+      final profile = await ref.read(voiceProfileControllerProvider.future);
+      final preferences = await ref.read(
+        mobilityPreferencesControllerProvider.future,
+      );
+      if (mounted) {
+        setState(() {
+          _autoDescribe = profile.speechEnabled && preferences.voiceGuidance;
+          _speechPreferenceReady = true;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _speechPreferenceReady = true);
+    }
   }
 
   Future<void> _startScan() async {
@@ -121,13 +155,19 @@ class _JourneyLensViewState extends ConsumerState<JourneyLensView> {
     });
   }
 
-  void _stopScan() {
+  void _stopScan({String message = 'Journey Lens stopped.'}) {
+    _staleResultsTimer?.cancel();
     setState(() {
       _scanning = false;
       _modelReady = false;
       _events = const [];
+      _candidateKey = null;
+      _candidateFrames = 0;
+      _lastAnnouncedKey = null;
+      _lastFeedbackKey = null;
+      _announcingKey = null;
       _introMessage = null;
-      _observation = 'Journey Lens stopped.';
+      _observation = message;
     });
   }
 
@@ -138,12 +178,12 @@ class _JourneyLensViewState extends ConsumerState<JourneyLensView> {
   }
 
   void _onResults(List<YOLOResult> results) {
+    if (!mounted || !_scanning) return;
     final now = DateTime.now();
     if (now.difference(_lastUiUpdate) < const Duration(milliseconds: 180)) {
       return;
     }
     _lastUiUpdate = now;
-
     final relevant =
         results
             .where(
@@ -161,15 +201,21 @@ class _JourneyLensViewState extends ConsumerState<JourneyLensView> {
     if (relevant.isEmpty) {
       _candidateKey = null;
       _candidateFrames = 0;
-      if (mounted && _events.isNotEmpty) {
-        setState(() {
-          _events = const [];
-          _observation =
-              'No supported objects are visible. This is not a path-clear confirmation.';
-        });
-      }
       return;
     }
+
+    _staleResultsTimer?.cancel();
+    _staleResultsTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (!mounted || !_scanning) return;
+      setState(() {
+        _events = const [];
+        _candidateKey = null;
+        _candidateFrames = 0;
+        _lastAnnouncedKey = null;
+        _lastFeedbackKey = null;
+        _observation = 'No supported objects detected.';
+      });
+    });
 
     final primary = relevant.first;
     final direction = _direction(primary.normalizedBox.center.dx);
@@ -200,18 +246,41 @@ class _JourneyLensViewState extends ConsumerState<JourneyLensView> {
       _events = events;
       _observation = summary;
     });
-    if (_lastAnnouncedKey != key) {
-      _lastAnnouncedKey = key;
+    if (_lastFeedbackKey != key) {
+      _lastFeedbackKey = key;
       unawaited(_directionHaptic(direction));
-      if (_autoDescribe &&
-          now.difference(_lastSpokenUpdate) >= const Duration(seconds: 6)) {
-        _lastSpokenUpdate = now;
-        unawaited(_describe());
-      }
+    }
+    if (_lastAnnouncedKey != key &&
+        _announcingKey != key &&
+        _autoDescribe &&
+        _speechPreferenceReady &&
+        ref.read(voiceProfileControllerProvider).value?.speechEnabled == true &&
+        ref.read(mobilityPreferencesControllerProvider).value?.voiceGuidance ==
+            true &&
+        now.difference(_lastSpokenUpdate) >= const Duration(seconds: 10)) {
+      unawaited(_announce(key));
     }
   }
 
+  Future<void> _announce(String key) async {
+    _announcingKey = key;
+    final spoken = await _describe(showError: false);
+    if (!mounted) return;
+    if (spoken && _autoDescribe && _announcingKey == key) {
+      _lastAnnouncedKey = key;
+      _lastSpokenUpdate = DateTime.now();
+    }
+    if (_announcingKey == key) _announcingKey = null;
+  }
+
   Future<void> _directionHaptic(HazardDirection direction) async {
+    if (ref.read(voiceProfileControllerProvider).value?.haptics != true ||
+        ref
+                .read(mobilityPreferencesControllerProvider)
+                .value
+                ?.vibrationAlerts !=
+            true)
+      return;
     switch (direction) {
       case HazardDirection.left:
         await HapticFeedback.selectionClick();
@@ -254,24 +323,63 @@ class _JourneyLensViewState extends ConsumerState<JourneyLensView> {
           return '$label $direction';
         })
         .join('. ');
-    return '$descriptions. Distance is unavailable.';
+    return '$descriptions.';
   }
 
-  Future<void> _describe() async {
+  Future<bool> _describe({bool showError = true}) async {
     try {
       final profile = await ref.read(voiceProfileControllerProvider.future);
       if (profile.haptics) HapticFeedback.selectionClick();
-      await ref
+      return await ref
           .read(responsePriorityServiceProvider)
           .speak(
-            '$_observation Use your usual mobility aid to confirm the path.',
+            _observation,
             profile,
             priority: ResponsePriority.informational,
           );
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || !showError) return false;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Voice playback is unavailable.')),
+      );
+      return false;
+    }
+  }
+
+  Future<void> _toggleAutoDescribe() async {
+    final profileSpeechEnabled =
+        ref.read(voiceProfileControllerProvider).value?.speechEnabled ??
+        _autoDescribe;
+    final globalSpeechEnabled =
+        ref.read(mobilityPreferencesControllerProvider).value?.voiceGuidance ??
+        false;
+    final enabled = !(profileSpeechEnabled && globalSpeechEnabled);
+    setState(() => _autoDescribe = enabled);
+    try {
+      if (!enabled) {
+        _announcingKey = null;
+        await ref.read(responsePriorityServiceProvider).stop();
+      }
+      final profile = await ref.read(voiceProfileControllerProvider.future);
+      await ref
+          .read(voiceProfileControllerProvider.notifier)
+          .save(profile.copyWith(speechEnabled: enabled));
+      if (enabled) {
+        final preferences = await ref.read(
+          mobilityPreferencesControllerProvider.future,
+        );
+        if (!preferences.voiceGuidance) {
+          await ref
+              .read(mobilityPreferencesControllerProvider.notifier)
+              .save(preferences.copyWith(voiceGuidance: true));
+        }
+      }
+      if (enabled && _events.isNotEmpty) unawaited(_describe());
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _autoDescribe = !enabled);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not save speech preference.')),
       );
     }
   }
@@ -377,6 +485,13 @@ class _JourneyLensViewState extends ConsumerState<JourneyLensView> {
 
   Widget _buildScanner(BuildContext context) {
     final model = YOLO.defaultOfficialModel() ?? 'yolo26n';
+    final globalSpeechEnabled =
+        ref.watch(mobilityPreferencesControllerProvider).value?.voiceGuidance ??
+        false;
+    final profileSpeechEnabled =
+        ref.watch(voiceProfileControllerProvider).value?.speechEnabled ??
+        _autoDescribe;
+    final speechEnabled = profileSpeechEnabled && globalSpeechEnabled;
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -397,7 +512,7 @@ class _JourneyLensViewState extends ConsumerState<JourneyLensView> {
           ),
           onResult: _onResults,
           onModelLoad: (_, _) {
-            unawaited(_cameraController.setShowOverlays(false));
+            unawaited(_cameraController.setShowOverlays(true));
             if (!mounted) return;
             setState(() {
               _modelReady = true;
@@ -416,67 +531,72 @@ class _JourneyLensViewState extends ConsumerState<JourneyLensView> {
         ),
         const _CameraScrim(),
         SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    _RoundOverlayButton(
-                      tooltip: widget.isJourneyLayer
-                          ? 'Return to map guidance'
-                          : 'Close Journey Lens',
-                      icon: widget.isJourneyLayer
-                          ? Icons.map_outlined
-                          : Icons.close_rounded,
-                      onPressed: widget.onClose,
-                    ),
-                    const SizedBox(width: 10),
-                    const Expanded(child: _PrivacyPill()),
-                    const SizedBox(width: 10),
-                    _RoundOverlayButton(
-                      tooltip: _torchEnabled
-                          ? 'Turn torch off'
-                          : 'Turn torch on',
-                      icon: _torchEnabled
-                          ? Icons.flashlight_off_rounded
-                          : Icons.flashlight_on_rounded,
-                      onPressed: _toggleTorch,
-                    ),
-                  ],
+          child: LayoutBuilder(
+            builder: (context, constraints) => SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  minHeight: constraints.maxHeight - 18,
                 ),
-                if (widget.instruction != null) ...[
-                  const SizedBox(height: 12),
-                  _LensManeuverCard(
-                    distanceLabel: widget.distanceLabel,
-                    instruction: widget.instruction!,
-                    destinationName: widget.destinationName,
+                child: IntrinsicHeight(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          _RoundOverlayButton(
+                            tooltip: widget.isJourneyLayer
+                                ? 'Return to map guidance'
+                                : 'Close Journey Lens',
+                            icon: widget.isJourneyLayer
+                                ? Icons.map_outlined
+                                : Icons.close_rounded,
+                            onPressed: widget.onClose,
+                          ),
+                          const SizedBox(width: 10),
+                          const Spacer(),
+                          const SizedBox(width: 10),
+                          _RoundOverlayButton(
+                            tooltip: speechEnabled
+                                ? 'Mute automatic descriptions'
+                                : 'Turn on automatic descriptions',
+                            icon: speechEnabled
+                                ? Icons.volume_up_rounded
+                                : Icons.volume_off_rounded,
+                            onPressed: _toggleAutoDescribe,
+                          ),
+                          const SizedBox(width: 6),
+                          _LensMenu(
+                            torchEnabled: _torchEnabled,
+                            modelReady: _modelReady,
+                            hasTalk: widget.onTalk != null,
+                            onTorch: _toggleTorch,
+                            onDescribe: _describe,
+                            onTalk: widget.onTalk,
+                            onStop: () {
+                              _stopScan();
+                              if (widget.isJourneyLayer) widget.onClose();
+                            },
+                          ),
+                        ],
+                      ),
+                      if (widget.instruction != null) ...[
+                        const SizedBox(height: 12),
+                        _LensManeuverCard(
+                          distanceLabel: widget.distanceLabel,
+                          instruction: widget.instruction!,
+                          destinationName: widget.destinationName,
+                        ),
+                      ],
+                      const Spacer(flex: 3),
+                      _ObservationPanel(
+                        observation: _observation,
+                        modelReady: _modelReady,
+                      ),
+                    ],
                   ),
-                ],
-                const Spacer(),
-                if (_events.isNotEmpty)
-                  _DirectionIndicator(direction: _events.first.direction),
-                const Spacer(),
-                _ObservationPanel(
-                  observation: _observation,
-                  modelReady: _modelReady,
-                  autoDescribe: _autoDescribe,
-                  hasTalk: widget.onTalk != null,
-                  onDescribe: _describe,
-                  onToggleAutoDescribe: () {
-                    setState(() => _autoDescribe = !_autoDescribe);
-                    if (_autoDescribe && _events.isNotEmpty) {
-                      unawaited(_describe());
-                    }
-                  },
-                  onTalk: widget.onTalk,
-                  onStop: () {
-                    _stopScan();
-                    if (widget.isJourneyLayer) widget.onClose();
-                  },
                 ),
-              ],
+              ),
             ),
           ),
         ),
@@ -504,45 +624,6 @@ class _CameraScrim extends StatelessWidget {
             ],
             stops: const [0, 0.25, 0.60, 1],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _PrivacyPill extends StatelessWidget {
-  const _PrivacyPill();
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      label: 'Camera processing is on device and is not recording',
-      child: Container(
-        constraints: const BoxConstraints(minHeight: 48),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.64),
-          borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.20)),
-        ),
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.lock_outline_rounded, color: Colors.white, size: 18),
-            SizedBox(width: 7),
-            Flexible(
-              child: Text(
-                'On device · not recording',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          ],
         ),
       ),
     );
@@ -606,70 +687,14 @@ class _LensManeuverCard extends StatelessWidget {
   }
 }
 
-class _DirectionIndicator extends StatelessWidget {
-  const _DirectionIndicator({required this.direction});
-
-  final HazardDirection direction;
-
-  @override
-  Widget build(BuildContext context) {
-    final alignment = switch (direction) {
-      HazardDirection.left => Alignment.centerLeft,
-      HazardDirection.centre => Alignment.center,
-      HazardDirection.right => Alignment.centerRight,
-      HazardDirection.unknown => Alignment.center,
-    };
-    final icon = switch (direction) {
-      HazardDirection.left => Icons.arrow_back_rounded,
-      HazardDirection.centre => Icons.arrow_upward_rounded,
-      HazardDirection.right => Icons.arrow_forward_rounded,
-      HazardDirection.unknown => Icons.help_outline_rounded,
-    };
-    final label = switch (direction) {
-      HazardDirection.left => 'Detected on the left',
-      HazardDirection.centre => 'Detected ahead',
-      HazardDirection.right => 'Detected on the right',
-      HazardDirection.unknown => 'Direction uncertain',
-    };
-    return Align(
-      alignment: alignment,
-      child: Semantics(
-        label: label,
-        child: Container(
-          width: 84,
-          height: 84,
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.46),
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 2),
-          ),
-          child: Icon(icon, color: Colors.white, size: 42),
-        ),
-      ),
-    );
-  }
-}
-
 class _ObservationPanel extends StatelessWidget {
   const _ObservationPanel({
     required this.observation,
     required this.modelReady,
-    required this.autoDescribe,
-    required this.hasTalk,
-    required this.onDescribe,
-    required this.onToggleAutoDescribe,
-    required this.onTalk,
-    required this.onStop,
   });
 
   final String observation;
   final bool modelReady;
-  final bool autoDescribe;
-  final bool hasTalk;
-  final VoidCallback onDescribe;
-  final VoidCallback onToggleAutoDescribe;
-  final VoidCallback? onTalk;
-  final VoidCallback onStop;
 
   @override
   Widget build(BuildContext context) {
@@ -683,23 +708,6 @@ class _ObservationPanel extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            children: [
-              const Icon(
-                Icons.center_focus_strong_rounded,
-                color: Colors.white,
-                size: 20,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'Journey Lens',
-                style: Theme.of(
-                  context,
-                ).textTheme.labelLarge?.copyWith(color: Colors.white),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
           Semantics(
             liveRegion: true,
             label: observation,
@@ -713,47 +721,12 @@ class _ObservationPanel extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Limited recognition · use your usual mobility aid',
+            modelReady
+                ? 'Limited recognition · use your mobility aid'
+                : 'Starting on-device recognition…',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Colors.white.withValues(alpha: 0.72),
             ),
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _LensAction(
-                tooltip: 'Speak current observation',
-                icon: Icons.volume_up_outlined,
-                label: 'Describe',
-                onPressed: modelReady ? onDescribe : null,
-              ),
-              _LensAction(
-                tooltip: autoDescribe
-                    ? 'Turn automatic descriptions off'
-                    : 'Turn automatic descriptions on',
-                icon: autoDescribe
-                    ? Icons.hearing_disabled_outlined
-                    : Icons.hearing_rounded,
-                label: autoDescribe ? 'Auto on' : 'Auto off',
-                selected: autoDescribe,
-                onPressed: modelReady ? onToggleAutoDescribe : null,
-              ),
-              if (hasTalk)
-                _LensAction(
-                  tooltip: 'Talk to Mobility AI',
-                  icon: Icons.auto_awesome_rounded,
-                  label: 'Ask',
-                  onPressed: onTalk,
-                ),
-              _LensAction(
-                tooltip: 'Stop Journey Lens',
-                icon: Icons.stop_circle_outlined,
-                label: 'Stop',
-                onPressed: onStop,
-              ),
-            ],
           ),
         ],
       ),
@@ -761,39 +734,87 @@ class _ObservationPanel extends StatelessWidget {
   }
 }
 
-class _LensAction extends StatelessWidget {
-  const _LensAction({
-    required this.tooltip,
-    required this.icon,
-    required this.label,
-    required this.onPressed,
-    this.selected = false,
+enum _LensMenuAction { torch, describe, talk, stop }
+
+class _LensMenu extends StatelessWidget {
+  const _LensMenu({
+    required this.torchEnabled,
+    required this.modelReady,
+    required this.hasTalk,
+    required this.onTorch,
+    required this.onDescribe,
+    required this.onTalk,
+    required this.onStop,
   });
 
-  final String tooltip;
-  final IconData icon;
-  final String label;
-  final VoidCallback? onPressed;
-  final bool selected;
+  final bool torchEnabled;
+  final bool modelReady;
+  final bool hasTalk;
+  final VoidCallback onTorch;
+  final VoidCallback onDescribe;
+  final VoidCallback? onTalk;
+  final VoidCallback onStop;
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: FilledButton.tonalIcon(
-        onPressed: onPressed,
-        style: FilledButton.styleFrom(
-          minimumSize: const Size(48, 48),
-          backgroundColor: selected
-              ? Theme.of(context).colorScheme.primaryContainer
-              : Colors.white.withValues(alpha: 0.14),
-          foregroundColor: selected
-              ? Theme.of(context).colorScheme.onPrimaryContainer
-              : Colors.white,
-        ),
-        icon: Icon(icon, size: 20),
-        label: Text(label),
+    return PopupMenuButton<_LensMenuAction>(
+      tooltip: 'More Journey Lens controls',
+      color: Theme.of(context).colorScheme.surface,
+      iconColor: Colors.white,
+      style: IconButton.styleFrom(
+        minimumSize: const Size(48, 48),
+        backgroundColor: Colors.black.withValues(alpha: 0.64),
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.20)),
       ),
+      onSelected: (action) {
+        switch (action) {
+          case _LensMenuAction.torch:
+            onTorch();
+          case _LensMenuAction.describe:
+            onDescribe();
+          case _LensMenuAction.talk:
+            onTalk?.call();
+          case _LensMenuAction.stop:
+            onStop();
+        }
+      },
+      itemBuilder: (context) => [
+        PopupMenuItem(
+          value: _LensMenuAction.torch,
+          child: ListTile(
+            leading: Icon(
+              torchEnabled
+                  ? Icons.flashlight_off_rounded
+                  : Icons.flashlight_on_rounded,
+            ),
+            title: Text(torchEnabled ? 'Turn torch off' : 'Turn torch on'),
+          ),
+        ),
+        PopupMenuItem(
+          value: _LensMenuAction.describe,
+          enabled: modelReady,
+          child: const ListTile(
+            leading: Icon(Icons.volume_up_outlined),
+            title: Text('Describe now'),
+          ),
+        ),
+        if (hasTalk)
+          const PopupMenuItem(
+            value: _LensMenuAction.talk,
+            child: ListTile(
+              leading: Icon(Icons.auto_awesome_rounded),
+              title: Text('Ask Mobility AI'),
+            ),
+          ),
+        const PopupMenuItem(
+          value: _LensMenuAction.stop,
+          child: ListTile(
+            leading: Icon(Icons.stop_circle_outlined),
+            title: Text('Stop Journey Lens'),
+          ),
+        ),
+      ],
+      icon: const Icon(Icons.more_vert_rounded),
     );
   }
 }

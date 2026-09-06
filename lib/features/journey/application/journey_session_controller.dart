@@ -101,6 +101,17 @@ class JourneySessionState {
     final rawTurns = json['turns'] as List<dynamic>? ?? const [];
     final rawRoutes = json['routes'] as List<dynamic>? ?? const [];
     final rawDestination = json['destination'] as Map<String, dynamic>?;
+    // Old prototype instructions and selection indices must not be resumed
+    // against a different real route after simulated options are removed.
+    if (rawRoutes.whereType<Map<String, dynamic>>().any(
+      (route) => route['source'] == JourneyEvidenceSource.simulated.name,
+    )) {
+      return JourneySessionState(
+        destination: rawDestination == null
+            ? null
+            : JourneyPlace.fromJson(rawDestination),
+      );
+    }
     return JourneySessionState(
       phase: enumValue(
         CompanionPhase.values,
@@ -117,7 +128,7 @@ class JourneySessionState {
       routes: [
         for (final route in rawRoutes.whereType<Map<String, dynamic>>())
           JourneyRouteOption.fromJson(route),
-      ],
+      ].where((route) => !route.isSimulated).toList(),
       selectedMode: json['selectedMode'] == null
           ? null
           : enumValue(

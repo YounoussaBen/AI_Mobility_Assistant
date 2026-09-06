@@ -35,6 +35,7 @@ class DeviceVoice {
 
 class VoiceProfile {
   const VoiceProfile({
+    this.speechEnabled = true,
     this.voiceName,
     this.voiceLocale = 'en-US',
     this.speechRate = 0.48,
@@ -46,6 +47,7 @@ class VoiceProfile {
     this.systemVoiceFallback = true,
   });
 
+  final bool speechEnabled;
   final String? voiceName;
   final String voiceLocale;
   final double speechRate;
@@ -57,6 +59,7 @@ class VoiceProfile {
   final bool systemVoiceFallback;
 
   VoiceProfile copyWith({
+    bool? speechEnabled,
     String? voiceName,
     String? voiceLocale,
     double? speechRate,
@@ -69,6 +72,7 @@ class VoiceProfile {
     bool clearVoice = false,
   }) {
     return VoiceProfile(
+      speechEnabled: speechEnabled ?? this.speechEnabled,
       voiceName: clearVoice ? null : voiceName ?? this.voiceName,
       voiceLocale: voiceLocale ?? this.voiceLocale,
       speechRate: speechRate ?? this.speechRate,
@@ -83,6 +87,7 @@ class VoiceProfile {
   }
 
   Map<String, Object?> toJson() => {
+    'speechEnabled': speechEnabled,
     'voiceName': voiceName,
     'voiceLocale': voiceLocale,
     'speechRate': speechRate,
@@ -100,6 +105,7 @@ class VoiceProfile {
       (value) => value.name == verbosityName,
     );
     return VoiceProfile(
+      speechEnabled: json['speechEnabled'] as bool? ?? true,
       voiceName: json['voiceName'] as String?,
       voiceLocale: json['voiceLocale'] as String? ?? 'en-US',
       speechRate: (json['speechRate'] as num?)?.toDouble() ?? 0.48,

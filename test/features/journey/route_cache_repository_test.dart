@@ -6,6 +6,24 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 void main() {
   test(
+    'old simulated cache evidence cannot become an offline real route',
+    () async {
+      final repository = RouteCacheRepository(MemoryAppStorage());
+      const origin = LatLng(5.60, -0.18);
+      const destination = LatLng(5.61, -0.17);
+      await repository.save(origin, destination, const [
+        JourneyRouteOption(
+          mode: JourneyTravelMode.driving,
+          duration: Duration(minutes: 5),
+          distanceMeters: 1000,
+          path: [origin, destination],
+          source: JourneyEvidenceSource.simulated,
+        ),
+      ]);
+      expect(repository.load(origin, destination), isEmpty);
+    },
+  );
+  test(
     'route cache restores evidence with an explicit cached source',
     () async {
       final repository = RouteCacheRepository(MemoryAppStorage());
